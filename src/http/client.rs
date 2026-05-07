@@ -155,12 +155,8 @@ impl VolvoClient {
     }
 
     pub async fn get_vehicle_location(&self, vin: &str, access_token: &str) -> Result<Value> {
-        self.get_location_json(
-            &location_path(vin),
-            access_token,
-            "latest vehicle location",
-        )
-        .await
+        self.get_location_json(&location_path(vin), access_token, "latest vehicle location")
+            .await
     }
 
     pub async fn get_command_list(&self, vin: &str, access_token: &str) -> Result<Value> {
@@ -416,6 +412,21 @@ impl VolvoClient {
             .context("failed to refresh access token")?;
         parse_token_response(response).await
     }
+
+    pub async fn refresh_access_token_bridge(
+        client: &reqwest::Client,
+        refresh_endpoint: &str,
+        refresh_token: &str,
+    ) -> Result<OAuthTokenResponse> {
+        let response = client
+            .post(refresh_endpoint)
+            .header("accept", "application/json")
+            .json(&serde_json::json!({ "refresh_token": refresh_token }))
+            .send()
+            .await
+            .context("failed to refresh access token via bridge")?;
+        parse_token_response(response).await
+    }
 }
 
 fn vehicle_path(vin: &str, suffix: &str) -> String {
@@ -516,10 +527,7 @@ mod tests {
             energy_path("YV1AA1234", "/capabilities"),
             "/vehicles/YV1AA1234/capabilities"
         );
-        assert_eq!(
-            location_path("YV1AA1234"),
-            "/vehicles/YV1AA1234/location"
-        );
+        assert_eq!(location_path("YV1AA1234"), "/vehicles/YV1AA1234/location");
     }
 
     #[test]

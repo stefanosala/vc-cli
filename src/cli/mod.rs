@@ -106,10 +106,10 @@ enum LocationSubcommand {
 #[derive(Debug, Args)]
 struct AuthLoginCliArgs {
     #[arg(long, env = "VOLVO_CLIENT_ID")]
-    client_id: String,
+    client_id: Option<String>,
 
     #[arg(long, env = "VOLVO_CLIENT_SECRET")]
-    client_secret: String,
+    client_secret: Option<String>,
 
     #[arg(long, env = "VOLVO_REDIRECT_URI", default_value = crate::config::DEFAULT_REDIRECT_URI)]
     redirect_uri: String,
@@ -119,6 +119,16 @@ struct AuthLoginCliArgs {
 
     #[arg(long, env = "VOLVO_AUTH_ISSUER", default_value = crate::config::DEFAULT_AUTH_ISSUER)]
     auth_issuer: String,
+
+    #[arg(long, env = "VOLVO_AUTH_BRIDGE_URL")]
+    auth_bridge_url: Option<String>,
+
+    #[arg(
+        long,
+        env = "VOLVO_AUTH_LISTEN_TIMEOUT_SECONDS",
+        default_value_t = crate::config::DEFAULT_AUTH_LISTEN_TIMEOUT_SECONDS
+    )]
+    auth_listen_timeout_seconds: u64,
 }
 
 #[derive(Debug, Args)]
@@ -433,6 +443,8 @@ pub async fn run() -> Result<()> {
                         redirect_uri: login.redirect_uri,
                         scopes: login.scopes,
                         auth_issuer: login.auth_issuer,
+                        auth_bridge_url: login.auth_bridge_url,
+                        auth_listen_timeout_seconds: login.auth_listen_timeout_seconds,
                     },
                 )
                 .await?;
@@ -984,6 +996,32 @@ mod tests {
     fn auth_token_set_parses_required_access_token() {
         let parsed =
             Cli::try_parse_from(["vc-cli", "auth", "token-set", "--access-token", "abc123"]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn auth_login_parses_with_bridge_only() {
+        let parsed = Cli::try_parse_from([
+            "vc-cli",
+            "auth",
+            "login",
+            "--auth-bridge-url",
+            "https://bridge.example.com",
+        ]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn auth_login_parses_with_legacy_credentials() {
+        let parsed = Cli::try_parse_from([
+            "vc-cli",
+            "auth",
+            "login",
+            "--client-id",
+            "client-a",
+            "--client-secret",
+            "secret-a",
+        ]);
         assert!(parsed.is_ok());
     }
 
