@@ -62,3 +62,7 @@ cargo test
 
 - Command output is JSON by default.
 - Configuration is stored locally per profile in SQLite.
+
+## License
+
+MIT
