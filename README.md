@@ -23,17 +23,25 @@ cargo run -- --help
 cargo run -- auth login
 ```
 
-2. Add a VIN and set it as default:
+2. Discover your vehicles:
 
 ```bash
-cargo run -- vehicle vin add --vin "<VIN>" --default
+cargo run -- vehicle list --api-key "$VCC_API_KEY"
 ```
 
-3. Fetch vehicle data:
+3. Set a default VIN if more than one vehicle is available:
+
+```bash
+cargo run -- vehicle vin default --vin "<VIN>" --api-key "$VCC_API_KEY"
+```
+
+4. Fetch vehicle data:
 
 ```bash
 cargo run -- vehicle windows get --api-key "$VCC_API_KEY"
 ```
+
+If no default VIN is configured, VIN-based commands discover vehicles automatically. A single VIN is saved as the default; multiple VINs are shown as an interactive prompt.
 
 ## Common Commands
 
@@ -43,9 +51,6 @@ cargo run -- vehicle list --api-key "$VCC_API_KEY"
 
 # Show active identity/session state
 cargo run -- auth whoami
-
-# List stored VINs
-cargo run -- vehicle vin list
 
 # Get latest known location
 cargo run -- location get --api-key "$VCC_API_KEY"

@@ -353,24 +353,16 @@ struct VehicleVinCommand {
 
 #[derive(Debug, Subcommand)]
 enum VehicleVinSubcommand {
-    List,
-    Add(VehicleVinAddCliArgs),
     Default(VehicleVinDefaultCliArgs),
-}
-
-#[derive(Debug, Args)]
-struct VehicleVinAddCliArgs {
-    #[arg(long)]
-    vin: String,
-
-    #[arg(long, default_value_t = false)]
-    default: bool,
 }
 
 #[derive(Debug, Args)]
 struct VehicleVinDefaultCliArgs {
     #[arg(long)]
     vin: String,
+
+    #[arg(long)]
+    api_key: Option<String>,
 }
 
 pub async fn run() -> Result<()> {
@@ -857,16 +849,15 @@ pub async fn run() -> Result<()> {
                 }
             },
             VehicleSubcommand::Vin(vin) => match vin.command {
-                VehicleVinSubcommand::List => {
-                    let output = vehicle_vin::list(&store, &profile)?;
-                    print_json(&output)?;
-                }
-                VehicleVinSubcommand::Add(add) => {
-                    let output = vehicle_vin::add(&store, &profile, &add.vin, add.default)?;
-                    print_json(&output)?;
-                }
                 VehicleVinSubcommand::Default(default_args) => {
-                    let output = vehicle_vin::set_default(&store, &profile, &default_args.vin)?;
+                    let output = vehicle_vin::set_default(
+                        &store,
+                        &profile,
+                        &base_url,
+                        default_args.api_key,
+                        &default_args.vin,
+                    )
+                    .await?;
                     print_json(&output)?;
                 }
             },
@@ -989,8 +980,8 @@ mod tests {
         let list = Cli::try_parse_from(["vc-cli", "vehicle", "vin", "list"]);
         let add = Cli::try_parse_from(["vc-cli", "vehicle", "vin", "add", "--vin", "VIN1"]);
         let default = Cli::try_parse_from(["vc-cli", "vehicle", "vin", "default", "--vin", "VIN1"]);
-        assert!(list.is_ok());
-        assert!(add.is_ok());
+        assert!(list.is_err());
+        assert!(add.is_err());
         assert!(default.is_ok());
     }
 }

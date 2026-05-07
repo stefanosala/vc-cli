@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 
-use crate::commands::vehicle_shared::{VehicleVinOutput, build_request_context, resolve_vin};
+use crate::commands::vehicle_shared::{VehicleVinOutput, build_request_context, resolve_vehicle};
 use crate::store::sqlite::{Profile, Store};
 
 #[derive(Debug, Clone)]
@@ -33,8 +33,8 @@ pub async fn execute(
     args: EnergyGetArgs,
     endpoint: EnergyReadEndpoint,
 ) -> Result<EnergyGetOutput> {
-    let vin = resolve_vin(store, profile, args.vin)?;
     let context = build_request_context(store, profile, base_url, args.api_key).await?;
+    let vin = resolve_vehicle(store, profile, &context, args.vin).await?;
     let data = match endpoint {
         EnergyReadEndpoint::State => {
             context

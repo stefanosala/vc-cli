@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 
 use crate::commands::vehicle_shared::{
     VehicleApiArgs, VehicleOutput, VehicleVinApiArgs, VehicleVinOutput, build_request_context,
-    resolve_vin,
+    resolve_vehicle, vehicle_list_output,
 };
 use crate::store::sqlite::{Profile, Store};
 
@@ -54,12 +54,7 @@ pub async fn execute_vehicle_list(
         .await
         .map_err(|err| anyhow!("failed to fetch vehicle list: {err:#}"))?;
 
-    Ok(VehicleOutput {
-        ok: true,
-        profile: profile.name.clone(),
-        base_url: context.client.base_url().to_owned(),
-        data,
-    })
+    Ok(vehicle_list_output(profile, &context, data))
 }
 
 pub async fn execute_vehicle_read(
@@ -69,8 +64,8 @@ pub async fn execute_vehicle_read(
     args: VehicleVinApiArgs,
     endpoint: VehicleReadEndpoint,
 ) -> Result<VehicleVinOutput> {
-    let vin = resolve_vin(store, profile, args.vin)?;
     let context = build_request_context(store, profile, base_url, args.api_key).await?;
+    let vin = resolve_vehicle(store, profile, &context, args.vin).await?;
     let data = match endpoint {
         VehicleReadEndpoint::Details => {
             context
