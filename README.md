@@ -18,6 +18,12 @@ npm i -g vc-cli
 vc-cli --help
 ```
 
+Install the Cursor skill:
+
+```bash
+npx skills add stefanosala/vc-cli
+```
+
 ## Quick Start
 
 1. Log in with the default auth bridge (`https://vc-cli.com`):
