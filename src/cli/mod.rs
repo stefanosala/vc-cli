@@ -3,7 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 
 use crate::commands::{
-    auth_login, auth_logout, auth_token_set, auth_whoami, energy_get, location_get, setup,
+    auth_login, auth_logout, auth_token_set, auth_whoami, energy_get, location_get,
     vehicle_commands, vehicle_get, vehicle_shared, vehicle_vin, vehicle_windows_get,
 };
 use crate::config::{DEFAULT_API_HOST, DEFAULT_PROFILE_NAME, resolve_config_dir};
@@ -25,23 +25,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum TopLevelCommand {
-    Setup(SetupCliArgs),
     Auth(AuthCommand),
     Energy(EnergyCommand),
     Location(LocationCommand),
     Vehicle(VehicleCommand),
-}
-
-#[derive(Debug, Args)]
-struct SetupCliArgs {
-    #[arg(long)]
-    api_host: Option<String>,
-
-    #[arg(long = "vin")]
-    vins: Vec<String>,
-
-    #[arg(long)]
-    default_vin: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -105,22 +92,14 @@ enum LocationSubcommand {
 
 #[derive(Debug, Args)]
 struct AuthLoginCliArgs {
-    #[arg(long, env = "VOLVO_CLIENT_ID")]
-    client_id: Option<String>,
-
-    #[arg(long, env = "VOLVO_CLIENT_SECRET")]
-    client_secret: Option<String>,
-
-    #[arg(long, env = "VOLVO_REDIRECT_URI", default_value = crate::config::DEFAULT_REDIRECT_URI)]
-    redirect_uri: String,
-
     #[arg(long, env = "VOLVO_SCOPES", default_value = crate::config::DEFAULT_SCOPES)]
     scopes: String,
 
-    #[arg(long, env = "VOLVO_AUTH_ISSUER", default_value = crate::config::DEFAULT_AUTH_ISSUER)]
-    auth_issuer: String,
-
-    #[arg(long, env = "VOLVO_AUTH_BRIDGE_URL")]
+    #[arg(
+        long,
+        env = "VOLVO_AUTH_BRIDGE_URL",
+        default_value = crate::config::DEFAULT_AUTH_BRIDGE_URL
+    )]
     auth_bridge_url: Option<String>,
 
     #[arg(
@@ -150,12 +129,6 @@ struct AuthTokenSetCliArgs {
 
     #[arg(long, env = "VOLVO_TOKEN_ENDPOINT")]
     token_endpoint: Option<String>,
-
-    #[arg(long, env = "VOLVO_CLIENT_ID")]
-    client_id: Option<String>,
-
-    #[arg(long, env = "VOLVO_CLIENT_SECRET")]
-    client_secret: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -418,19 +391,6 @@ pub async fn run() -> Result<()> {
     let base_url = resolve_base_url(cli.api_host.as_deref(), &profile)?;
 
     match cli.command {
-        TopLevelCommand::Setup(args) => {
-            let output = setup::execute(
-                &store,
-                &profile,
-                &base_url,
-                setup::SetupArgs {
-                    api_host: args.api_host,
-                    vins: args.vins,
-                    default_vin: args.default_vin,
-                },
-            )?;
-            print_json(&output)?;
-        }
         TopLevelCommand::Auth(args) => match args.command {
             AuthSubcommand::Login(login) => {
                 let output = auth_login::execute(
@@ -438,11 +398,7 @@ pub async fn run() -> Result<()> {
                     &profile,
                     &base_url,
                     auth_login::AuthLoginArgs {
-                        client_id: login.client_id,
-                        client_secret: login.client_secret,
-                        redirect_uri: login.redirect_uri,
                         scopes: login.scopes,
-                        auth_issuer: login.auth_issuer,
                         auth_bridge_url: login.auth_bridge_url,
                         auth_listen_timeout_seconds: login.auth_listen_timeout_seconds,
                     },
@@ -462,8 +418,6 @@ pub async fn run() -> Result<()> {
                         scope: token_set.scope,
                         token_type: Some(token_set.token_type),
                         token_endpoint: token_set.token_endpoint,
-                        client_id: token_set.client_id,
-                        client_secret: token_set.client_secret,
                     },
                 )?;
                 print_json(&output)?;
@@ -940,21 +894,6 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn setup_parses_with_multiple_vins() {
-        let parsed = Cli::try_parse_from([
-            "vc-cli",
-            "setup",
-            "--vin",
-            "VIN1",
-            "--vin",
-            "VIN2",
-            "--default-vin",
-            "VIN2",
-        ]);
-        assert!(parsed.is_ok());
-    }
-
-    #[test]
     fn windows_get_parses_without_vin() {
         let parsed = Cli::try_parse_from(["vc-cli", "vehicle", "windows", "get"]);
         assert!(parsed.is_ok());
@@ -1012,7 +951,13 @@ mod tests {
     }
 
     #[test]
-    fn auth_login_parses_with_legacy_credentials() {
+    fn auth_login_parses_with_default_bridge() {
+        let parsed = Cli::try_parse_from(["vc-cli", "auth", "login"]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn auth_login_rejects_client_credentials() {
         let parsed = Cli::try_parse_from([
             "vc-cli",
             "auth",
@@ -1022,7 +967,7 @@ mod tests {
             "--client-secret",
             "secret-a",
         ]);
-        assert!(parsed.is_ok());
+        assert!(parsed.is_err());
     }
 
     #[test]

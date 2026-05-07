@@ -284,7 +284,7 @@ impl Store {
             .context("failed to read default VIN")?;
         maybe_default.ok_or_else(|| {
             anyhow!(
-                "no VIN provided and no default VIN configured; run `setup` or `vehicle vin default --vin <VIN>`"
+                "no VIN provided and no default VIN configured; run `vehicle vin add --vin <VIN> --default` or `vehicle vin default --vin <VIN>`"
             )
         })
     }

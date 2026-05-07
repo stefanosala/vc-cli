@@ -5,9 +5,7 @@ VC Cli is a command-line interface for interacting with the Volvo Cars Connected
 ## Prerequisites
 
 - Rust toolchain (stable)
-- A Volvo developer application with:
-  - `VOLVO_CLIENT_ID`
-  - `VOLVO_CLIENT_SECRET`
+- Optional custom auth bridge (`VOLVO_AUTH_BRIDGE_URL`); defaults to `https://vc-cli.com`
 - API key for vehicle endpoints (`VCC_API_KEY`)
 
 ## Install and Run
@@ -19,11 +17,10 @@ cargo run -- --help
 
 ## Quick Start
 
-1. Log in (bridge-managed credentials):
+1. Log in with the default auth bridge (`https://vc-cli.com`):
 
 ```bash
-export VOLVO_AUTH_BRIDGE_URL="https://<your-bridge-domain>"
-cargo run -- auth login --auth-bridge-url "$VOLVO_AUTH_BRIDGE_URL"
+cargo run -- auth login
 ```
 
 2. Add a VIN and set it as default:
@@ -61,7 +58,7 @@ cargo test
 
 - Command output is JSON by default.
 - Configuration is stored locally per profile in SQLite.
-- In bridge mode, `client_id` and `client_secret` are configured on the bridge service only.
+- Volvo OAuth `client_id` and `client_secret` are configured on the bridge service only.
 - `auth login` requests all Connected Vehicle, Energy, and Location scopes by default. Use `--scopes` or `VOLVO_SCOPES` to override the requested scope set.
 
 ## VC Cli Auth Service
@@ -85,14 +82,6 @@ npx wrangler kv namespace create OAUTH_SESSIONS
 npx wrangler secret put VOLVO_CLIENT_ID
 npx wrangler secret put VOLVO_CLIENT_SECRET
 npm run deploy
-```
-
-For local development or fallback, legacy direct login still works:
-
-```bash
-cargo run -- auth login \
-  --client-id "$VOLVO_CLIENT_ID" \
-  --client-secret "$VOLVO_CLIENT_SECRET"
 ```
 
 ## License

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 pub const DEFAULT_PROFILE_NAME: &str = "default";
 pub const DEFAULT_API_HOST: &str = "https://api.volvocars.com";
 pub const DEFAULT_AUTH_ISSUER: &str = "https://volvoid.eu.volvocars.com";
-pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8787/callback";
+pub const DEFAULT_AUTH_BRIDGE_URL: &str = "https://vc-cli.com";
 pub const DEFAULT_SCOPES: &str = concat!(
     "openid ",
     "conve:battery_charge_level ",
