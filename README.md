@@ -1,13 +1,11 @@
-# vc-cli
+# VC Cli
 
-`vc-cli` is a command-line interface for interacting with the Volvo Cars Connected Vehicle API.
+VC Cli is a command-line interface for interacting with the Volvo Cars Connected Vehicle API.
 
 ## Prerequisites
 
 - Rust toolchain (stable)
-- A Volvo developer application with:
-  - `VOLVO_CLIENT_ID`
-  - `VOLVO_CLIENT_SECRET`
+- Optional custom auth bridge (`VOLVO_AUTH_BRIDGE_URL`); defaults to `https://vc-cli.com`
 - API key for vehicle endpoints (`VCC_API_KEY`)
 
 ## Install and Run
@@ -19,25 +17,31 @@ cargo run -- --help
 
 ## Quick Start
 
-1. Log in:
+1. Log in with the default auth bridge (`https://vc-cli.com`):
 
 ```bash
-cargo run -- auth login \
-  --client-id "$VOLVO_CLIENT_ID" \
-  --client-secret "$VOLVO_CLIENT_SECRET"
+cargo run -- auth login
 ```
 
-2. Add a VIN and set it as default:
+2. Discover your vehicles:
 
 ```bash
-cargo run -- vehicle vin add --vin "<VIN>" --default
+cargo run -- vehicle list --api-key "$VCC_API_KEY"
 ```
 
-3. Fetch vehicle data:
+3. Set a default VIN if more than one vehicle is available:
+
+```bash
+cargo run -- vehicle vin default --vin "<VIN>" --api-key "$VCC_API_KEY"
+```
+
+4. Fetch vehicle data:
 
 ```bash
 cargo run -- vehicle windows get --api-key "$VCC_API_KEY"
 ```
+
+If no default VIN is configured, VIN-based commands discover vehicles automatically. A single VIN is saved as the default; multiple VINs are shown as an interactive prompt.
 
 ## Common Commands
 
@@ -47,9 +51,6 @@ cargo run -- vehicle list --api-key "$VCC_API_KEY"
 
 # Show active identity/session state
 cargo run -- auth whoami
-
-# List stored VINs
-cargo run -- vehicle vin list
 
 # Get latest known location
 cargo run -- location get --api-key "$VCC_API_KEY"
@@ -62,6 +63,31 @@ cargo test
 
 - Command output is JSON by default.
 - Configuration is stored locally per profile in SQLite.
+- Volvo OAuth `client_id` and `client_secret` are configured on the bridge service only.
+- `auth login` requests all Connected Vehicle, Energy, and Location scopes by default. Use `--scopes` or `VOLVO_SCOPES` to override the requested scope set.
+
+## VC Cli Auth Service
+
+This repository includes a Cloudflare implementation under `bridge/cloudflare` that provides:
+
+- `GET /` basic homepage
+- `GET /privacy.html` privacy notice
+- `GET /terms.html` terms and conditions
+- `POST /v1/oauth/start` start bridge login session
+- `GET /oauth/callback` Volvo callback that hands off to localhost
+- `POST /v1/oauth/refresh` refresh via bridge credentials
+
+Deploy and configure:
+
+```bash
+cd bridge/cloudflare
+npm install
+cp wrangler.example.jsonc wrangler.jsonc
+npx wrangler kv namespace create OAUTH_SESSIONS
+npx wrangler secret put VOLVO_CLIENT_ID
+npx wrangler secret put VOLVO_CLIENT_SECRET
+npm run deploy
+```
 
 ## License
 

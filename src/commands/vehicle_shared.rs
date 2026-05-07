@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use serde_json::Value;
+use std::io::{self, IsTerminal, Write};
 
 use crate::http::client::VolvoClient;
 use crate::store::sqlite::{AuthSession, PersistedTokenSet, Profile, Store, unix_now};
@@ -54,8 +55,125 @@ pub async fn build_request_context(
     })
 }
 
-pub fn resolve_vin(store: &Store, profile: &Profile, vin: Option<String>) -> Result<String> {
-    store.resolve_vin(profile.id, vin.as_deref())
+pub async fn resolve_vehicle(
+    store: &Store,
+    profile: &Profile,
+    context: &VehicleRequestContext,
+    vin: Option<String>,
+) -> Result<String> {
+    if let Some(vin) = vin {
+        return store.resolve_vin(profile.id, Some(&vin));
+    }
+
+    if let Some(default_vin) = store.get_default_vin(profile.id)? {
+        return Ok(default_vin);
+    }
+
+    let data = context
+        .client
+        .get_vehicle_list(&context.access_token)
+        .await
+        .map_err(|err| anyhow!("failed to fetch vehicle list: {err:#}"))?;
+    let vins = extract_vehicle_vins(&data);
+
+    match vins.len() {
+        0 => {
+            return Err(anyhow!(
+                "no vehicles were returned by the vehicle list endpoint"
+            ));
+        }
+        1 => {
+            store.sync_vins(profile.id, &vins, vins.first().map(String::as_str))?;
+            return Ok(vins[0].clone());
+        }
+        _ => {}
+    }
+
+    store.sync_vins(profile.id, &vins, None)?;
+    let selected_vin = prompt_for_default_vin(&vins)?;
+    store.sync_vins(profile.id, &vins, Some(&selected_vin))?;
+    Ok(selected_vin)
+}
+
+pub fn vehicle_list_output(
+    profile: &Profile,
+    context: &VehicleRequestContext,
+    data: Value,
+) -> VehicleOutput {
+    VehicleOutput {
+        ok: true,
+        profile: profile.name.clone(),
+        base_url: context.client.base_url().to_owned(),
+        data,
+    }
+}
+
+pub fn extract_vehicle_vins(data: &Value) -> Vec<String> {
+    let vehicles = data
+        .pointer("/data/data")
+        .and_then(Value::as_array)
+        .or_else(|| data.pointer("/data").and_then(Value::as_array))
+        .or_else(|| data.as_array());
+
+    vehicles
+        .into_iter()
+        .flatten()
+        .filter_map(|vehicle| vehicle.get("vin").and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|vin| !vin.is_empty())
+        .map(str::to_uppercase)
+        .fold(Vec::new(), |mut vins, vin| {
+            if !vins.contains(&vin) {
+                vins.push(vin);
+            }
+            vins
+        })
+}
+
+fn prompt_for_default_vin(vins: &[String]) -> Result<String> {
+    let mut stderr = io::stderr();
+    writeln!(
+        stderr,
+        "No default VIN configured. Select one of the available vehicles:"
+    )?;
+    for (index, vin) in vins.iter().enumerate() {
+        writeln!(stderr, "  {}. {}", index + 1, vin)?;
+    }
+
+    if !io::stdin().is_terminal() {
+        return Err(anyhow!(
+            "multiple vehicles available and no interactive terminal is available; run `vehicle vin default --vin <VIN>`"
+        ));
+    }
+
+    write!(stderr, "Select vehicle [1-{}]: ", vins.len())?;
+    stderr.flush()?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("failed to read selected vehicle")?;
+    let selection = input.trim();
+
+    if let Ok(index) = selection.parse::<usize>()
+        && let Some(vin) = vins.get(index.saturating_sub(1))
+        && index > 0
+    {
+        return Ok(vin.clone());
+    }
+
+    if let Some(vin) = vins
+        .iter()
+        .find(|vin| vin.eq_ignore_ascii_case(selection))
+        .cloned()
+    {
+        return Ok(vin);
+    }
+
+    Err(anyhow!(
+        "invalid vehicle selection `{selection}`; choose a number from 1 to {} or enter a listed VIN",
+        vins.len()
+    ))
 }
 
 pub fn resolve_api_key(cli_override: Option<String>) -> Result<String> {
@@ -96,14 +214,23 @@ async fn ensure_fresh_session(store: &Store, profile: &Profile) -> Result<AuthSe
         .clone()
         .ok_or_else(|| anyhow!("access token expired and no refresh token is available"))?;
 
-    let refreshed = VolvoClient::refresh_access_token(
-        &reqwest::Client::new(),
-        &session.token_endpoint,
-        &session.client_id,
-        &session.client_secret,
-        &refresh_token,
-    )
-    .await
+    let refreshed = if is_bridge_managed(&session) {
+        VolvoClient::refresh_access_token_bridge(
+            &reqwest::Client::new(),
+            &session.token_endpoint,
+            &refresh_token,
+        )
+        .await
+    } else {
+        VolvoClient::refresh_access_token(
+            &reqwest::Client::new(),
+            &session.token_endpoint,
+            &session.client_id,
+            &session.client_secret,
+            &refresh_token,
+        )
+        .await
+    }
     .context("failed to refresh access token")?;
 
     let expires_at = refreshed.expires_in.map(|value| unix_now() + value as i64);
@@ -127,9 +254,15 @@ async fn ensure_fresh_session(store: &Store, profile: &Profile) -> Result<AuthSe
         .ok_or_else(|| anyhow!("missing auth session after token refresh"))
 }
 
+fn is_bridge_managed(session: &AuthSession) -> bool {
+    let token_endpoint = session.token_endpoint.to_ascii_lowercase();
+    token_endpoint.contains("/v1/oauth/refresh")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{resolve_api_key, should_refresh};
+    use super::{is_bridge_managed, resolve_api_key, should_refresh};
+    use crate::store::sqlite::AuthSession;
 
     #[test]
     fn refresh_when_expiring_soon() {
@@ -142,5 +275,21 @@ mod tests {
     fn api_key_override_wins() {
         let resolved = resolve_api_key(Some("  cli-key  ".to_owned())).expect("should resolve");
         assert_eq!(resolved, "cli-key");
+    }
+
+    #[test]
+    fn bridge_sessions_use_bridge_refresh_endpoint() {
+        let session = AuthSession {
+            profile_id: 1,
+            access_token: "a".to_owned(),
+            refresh_token: Some("r".to_owned()),
+            scope: None,
+            token_type: None,
+            expires_at: None,
+            token_endpoint: "https://bridge.example.com/v1/oauth/refresh".to_owned(),
+            client_id: "bridge-managed".to_owned(),
+            client_secret: "bridge-managed".to_owned(),
+        };
+        assert!(is_bridge_managed(&session));
     }
 }

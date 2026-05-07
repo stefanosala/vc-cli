@@ -1,1 +1,7 @@
 /target
+node_modules
+bridge/cloudflare/wrangler.jsonc
+bridge/cloudflare/.dev.vars
+bridge/cloudflare/.dev.vars.*
+bridge/cloudflare/.wrangler/
+.env

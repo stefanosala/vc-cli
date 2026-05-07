@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use serde_json::json;
 
 use crate::commands::vehicle_shared::{
-    VehicleVinApiArgs, VehicleVinOutput, build_request_context, resolve_vin,
+    VehicleVinApiArgs, VehicleVinOutput, build_request_context, resolve_vehicle,
 };
 use crate::store::sqlite::{Profile, Store};
 
@@ -32,8 +32,8 @@ pub async fn execute_query(
     args: VehicleVinApiArgs,
     endpoint: VehicleCommandsQueryEndpoint,
 ) -> Result<VehicleVinOutput> {
-    let vin = resolve_vin(store, profile, args.vin)?;
     let context = build_request_context(store, profile, base_url, args.api_key).await?;
+    let vin = resolve_vehicle(store, profile, &context, args.vin).await?;
     let data = match endpoint {
         VehicleCommandsQueryEndpoint::List => {
             context
@@ -66,8 +66,8 @@ pub async fn execute_invoke(
     args: VehicleVinApiArgs,
     endpoint: VehicleInvokeEndpoint,
 ) -> Result<VehicleVinOutput> {
-    let vin = resolve_vin(store, profile, args.vin)?;
     let context = build_request_context(store, profile, base_url, args.api_key).await?;
+    let vin = resolve_vehicle(store, profile, &context, args.vin).await?;
     let data = match endpoint {
         VehicleInvokeEndpoint::Unlock => {
             context
@@ -148,8 +148,8 @@ pub async fn execute_engine_start(
         ));
     }
 
-    let vin = resolve_vin(store, profile, args.vin)?;
     let context = build_request_context(store, profile, base_url, args.api_key).await?;
+    let vin = resolve_vehicle(store, profile, &context, args.vin).await?;
     let data = context
         .client
         .invoke_engine_start(

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -231,7 +232,7 @@ impl Store {
             .context("failed to read VIN by profile")?;
         if exists.is_none() {
             return Err(anyhow!(
-                "VIN `{vin}` is not stored for the active profile; add it with `vehicle vin add --vin {vin}` first"
+                "VIN `{vin}` is not available for the active profile; run `vehicle list` to discover vehicles"
             ));
         }
         self.conn
@@ -246,6 +247,50 @@ impl Store {
                 params![profile_id, vin],
             )
             .context("failed to set default VIN")?;
+        Ok(())
+    }
+
+    pub fn sync_vins(
+        &self,
+        profile_id: i64,
+        vins: &[String],
+        default_vin: Option<&str>,
+    ) -> Result<()> {
+        let mut normalized_vins = BTreeSet::new();
+        for vin in vins {
+            normalized_vins.insert(normalize_vin(vin)?);
+        }
+
+        let requested_default_vin = default_vin.map(normalize_vin).transpose()?;
+        if let Some(default) = requested_default_vin.as_deref()
+            && !normalized_vins.contains(default)
+        {
+            return Err(anyhow!(
+                "VIN `{default}` is not available for the active profile"
+            ));
+        }
+
+        let current_default_vin = self.get_default_vin(profile_id)?;
+        let default_vin = requested_default_vin
+            .or_else(|| current_default_vin.filter(|current| normalized_vins.contains(current)));
+
+        self.conn
+            .execute(
+                "DELETE FROM profile_vins WHERE profile_id = ?1",
+                params![profile_id],
+            )
+            .context("failed to clear cached VINs")?;
+
+        for vin in normalized_vins {
+            let is_default = default_vin.as_deref() == Some(vin.as_str());
+            self.conn
+                .execute(
+                    "INSERT INTO profile_vins (profile_id, vin, is_default) VALUES (?1, ?2, ?3)",
+                    params![profile_id, vin, i64::from(is_default)],
+                )
+                .context("failed to cache discovered VIN")?;
+        }
+
         Ok(())
     }
 
@@ -269,22 +314,25 @@ impl Store {
             .context("failed to parse VIN rows")
     }
 
-    pub fn resolve_vin(&self, profile_id: i64, explicit: Option<&str>) -> Result<String> {
-        if let Some(vin) = explicit {
-            return normalize_vin(vin);
-        }
-        let maybe_default: Option<String> = self
-            .conn
+    pub fn get_default_vin(&self, profile_id: i64) -> Result<Option<String>> {
+        self.conn
             .query_row(
                 "SELECT vin FROM profile_vins WHERE profile_id = ?1 AND is_default = 1 LIMIT 1",
                 params![profile_id],
                 |row| row.get(0),
             )
             .optional()
-            .context("failed to read default VIN")?;
+            .context("failed to read default VIN")
+    }
+
+    pub fn resolve_vin(&self, profile_id: i64, explicit: Option<&str>) -> Result<String> {
+        if let Some(vin) = explicit {
+            return normalize_vin(vin);
+        }
+        let maybe_default = self.get_default_vin(profile_id)?;
         maybe_default.ok_or_else(|| {
             anyhow!(
-                "no VIN provided and no default VIN configured; run `setup` or `vehicle vin default --vin <VIN>`"
+                "no VIN provided and no default VIN configured; run `vehicle list` and set one with `vehicle vin default --vin <VIN>`"
             )
         })
     }
@@ -352,5 +400,28 @@ mod tests {
             .resolve_vin(profile.id, None)
             .expect("default VIN should resolve");
         assert_eq!(resolved, "YV1AA111111111111");
+    }
+
+    #[test]
+    fn sync_vins_preserves_existing_default_when_available() {
+        let file = NamedTempFile::new().expect("temp file should create");
+        let store = Store::open(file.path()).expect("store should open");
+        let profile = store
+            .get_or_create_profile("default", "https://api.volvocars.com")
+            .expect("profile should create");
+        store
+            .sync_vins(
+                profile.id,
+                &["VIN1".to_owned(), "VIN2".to_owned()],
+                Some("VIN2"),
+            )
+            .expect("vins should sync");
+        store
+            .sync_vins(profile.id, &["VIN1".to_owned(), "VIN2".to_owned()], None)
+            .expect("vins should sync without changing default");
+
+        let vins = store.list_vins(profile.id).expect("list vins should work");
+        assert_eq!(vins[0].vin, "VIN2");
+        assert!(vins[0].is_default);
     }
 }

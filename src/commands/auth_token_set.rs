@@ -12,8 +12,6 @@ pub struct AuthTokenSetArgs {
     pub scope: Option<String>,
     pub token_type: Option<String>,
     pub token_endpoint: Option<String>,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,10 +34,6 @@ pub fn execute(
     let access_token = normalize_required(args.access_token, "access token")?;
     let refresh_token = normalize_optional(args.refresh_token);
     let token_endpoint = resolve_token_endpoint(args.token_endpoint);
-    let client_id =
-        normalize_optional(args.client_id).unwrap_or_else(|| "manual-token-set".to_owned());
-    let client_secret =
-        normalize_optional(args.client_secret).unwrap_or_else(|| "manual-token-set".to_owned());
     let scope = normalize_optional(args.scope);
     let token_type = normalize_optional(args.token_type);
     let expires_at = args.expires_in.map(|seconds| unix_now() + seconds as i64);
@@ -53,8 +47,8 @@ pub fn execute(
             token_type: token_type.clone(),
             expires_at,
             token_endpoint,
-            client_id,
-            client_secret,
+            client_id: "manual-token-set".to_owned(),
+            client_secret: "manual-token-set".to_owned(),
         },
     )?;
 

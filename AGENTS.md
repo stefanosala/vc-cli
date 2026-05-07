@@ -32,8 +32,7 @@ This file tells coding agents where to look first for implementation examples an
 When implementing features, start here:
 
 - CLI routing and command wiring: `src/cli/mod.rs`
-- Setup and VIN bootstrap flow: `src/commands/setup.rs`
-- Auth login command logic (OAuth2 PKCE): `src/commands/auth_login.rs`
+- Auth login bridge handoff logic: `src/commands/auth_login.rs`
 - Auth identity/session commands: `src/commands/auth_whoami.rs`, `src/commands/auth_logout.rs`
 - Vehicle windows command: `src/commands/vehicle_windows_get.rs`
 - VIN management commands: `src/commands/vehicle_vin.rs`
@@ -56,13 +55,15 @@ When implementing features, start here:
 
 ## VIN Management Rules
 
-- Persist VINs per profile in SQLite.
+- Persist API-discovered VINs per profile in SQLite.
 - Support multiple VINs per profile.
 - Keep one default VIN per profile.
+- Do not allow manual VIN insertion; VINs must come from the vehicle list endpoint.
 - VIN resolution precedence for vehicle commands:
   1. explicit `--vin`
   2. stored default VIN
-  3. actionable error instructing setup/default configuration
+  3. fetch `vehicle list`, cache discovered VINs, and auto-set the single VIN as default
+  4. if multiple VINs are available, prompt the user to choose and persist a default
 
 ## Validation Checklist for New Changes
 
@@ -70,9 +71,10 @@ After implementing a change, verify:
 
 1. `cargo test` passes
 2. `auth login` succeeds with valid Volvo credentials
-3. `setup` stores VINs and default VIN correctly
-4. `vehicle windows get` works both with `--vin` and without `--vin` when default VIN exists
-5. profile/env precedence behaves as expected
+3. `vehicle list` discovers VINs from the API
+4. `vehicle vin default --vin <VIN>` stores a discovered VIN as default
+5. `vehicle windows get` works both with `--vin` and without `--vin` when default VIN exists
+6. profile/env precedence behaves as expected
 
 ## Notes for Agents
 
@@ -93,4 +95,4 @@ After implementing a change, verify:
 - **Test:** `cargo test`
 - **Lint:** `cargo clippy`
 - **Format check:** `cargo fmt -- --check`
-- **Run:** `cargo run -- <subcommand>` (for example: `cargo run -- vehicle vin list`)
+- **Run:** `cargo run -- <subcommand>` (for example: `cargo run -- vehicle list`)

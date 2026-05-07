@@ -1,0 +1,60 @@
+{
+  "name": "vc-cli-oauth-bridge",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-05-07",
+  "assets": {
+    "directory": "public",
+    "binding": "ASSETS"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_SESSIONS",
+      "id": "replace-with-your-kv-id"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "RATE_LIMIT_PER_IP",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 8,
+        "period": 10
+      }
+    },
+    {
+      "name": "RATE_LIMIT_GLOBAL",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 120,
+        "period": 10
+      }
+    },
+    {
+      "name": "RATE_LIMIT_REFRESH_PER_IP",
+      "namespace_id": "1003",
+      "simple": {
+        "limit": 1,
+        "period": 60
+      }
+    },
+    {
+      "name": "RATE_LIMIT_START_PER_IP",
+      "namespace_id": "1004",
+      "simple": {
+        "limit": 1,
+        "period": 60
+      }
+    },
+    {
+      "name": "RATE_LIMIT_START_GLOBAL",
+      "namespace_id": "1005",
+      "simple": {
+        "limit": 10,
+        "period": 10
+      }
+    }
+  ],
+  "vars": {
+    "VOLVO_AUTH_ISSUER": "https://volvoid.eu.volvocars.com"
+  }
+}
