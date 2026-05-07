@@ -1,6 +1,11 @@
 interface Env {
   ASSETS: Fetcher;
   OAUTH_SESSIONS: KVNamespace;
+  RATE_LIMIT_PER_IP: RateLimit;
+  RATE_LIMIT_GLOBAL: RateLimit;
+  RATE_LIMIT_REFRESH_PER_IP: RateLimit;
+  RATE_LIMIT_START_PER_IP: RateLimit;
+  RATE_LIMIT_START_GLOBAL: RateLimit;
   VOLVO_CLIENT_ID: string;
   VOLVO_CLIENT_SECRET: string;
   VOLVO_AUTH_ISSUER?: string;
@@ -58,11 +63,17 @@ const DEFAULT_SCOPE = [
   "location:read",
 ].join(" ");
 const DEFAULT_AUTH_ISSUER = "https://volvoid.eu.volvocars.com";
+const GLOBAL_RATE_LIMIT_KEY = "global:all-endpoints";
+const START_GLOBAL_RATE_LIMIT_KEY = "global:oauth-start";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const rateLimitResponse = await enforceRateLimits(request, env, path);
+    if (rateLimitResponse) {
+      return rateLimitResponse;
+    }
 
     if (request.method === "POST" && path === "/v1/oauth/start") {
       return handleStart(request, env, url.origin);
@@ -80,6 +91,80 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 };
+
+async function enforceRateLimits(request: Request, env: Env, path: string): Promise<Response | null> {
+  const clientIp = extractClientIp(request);
+  const perIpKey = `${request.method}:${path}:${clientIp}`;
+  const [perIpResult, globalResult] = await Promise.all([
+    env.RATE_LIMIT_PER_IP.limit({ key: perIpKey }),
+    env.RATE_LIMIT_GLOBAL.limit({ key: GLOBAL_RATE_LIMIT_KEY }),
+  ]);
+
+  if (!perIpResult.success || !globalResult.success) {
+    const reason =
+      !perIpResult.success && !globalResult.success
+        ? "ip_and_global"
+        : !perIpResult.success
+          ? "ip"
+          : "global";
+    return json(
+      {
+        error: "rate_limited",
+        reason,
+      },
+      429,
+    );
+  }
+
+  if (request.method === "POST" && path === "/v1/oauth/refresh") {
+    const refreshResult = await env.RATE_LIMIT_REFRESH_PER_IP.limit({ key: clientIp });
+    if (!refreshResult.success) {
+      return json(
+        {
+          error: "rate_limited",
+          reason: "refresh_ip",
+        },
+        429,
+      );
+    }
+  }
+
+  if (request.method === "POST" && path === "/v1/oauth/start") {
+    const [startPerIpResult, startGlobalResult] = await Promise.all([
+      env.RATE_LIMIT_START_PER_IP.limit({ key: clientIp }),
+      env.RATE_LIMIT_START_GLOBAL.limit({ key: START_GLOBAL_RATE_LIMIT_KEY }),
+    ]);
+    if (!startPerIpResult.success || !startGlobalResult.success) {
+      const reason =
+        !startPerIpResult.success && !startGlobalResult.success
+          ? "start_ip_and_global"
+          : !startPerIpResult.success
+            ? "start_ip"
+            : "start_global";
+      return json(
+        {
+          error: "rate_limited",
+          reason,
+        },
+        429,
+      );
+    }
+  }
+
+  return null;
+}
+
+function extractClientIp(request: Request): string {
+  const cfIp = request.headers.get("cf-connecting-ip");
+  if (cfIp) {
+    return cfIp.trim();
+  }
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (!forwardedFor) {
+    return "unknown";
+  }
+  return forwardedFor.split(",")[0]?.trim() || "unknown";
+}
 
 async function handleStart(request: Request, env: Env, origin: string): Promise<Response> {
   const body = await readJson<BridgeStartRequest>(request);

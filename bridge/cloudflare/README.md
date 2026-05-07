@@ -60,3 +60,31 @@ Use the deployed URL in CLI:
 ```bash
 export VOLVO_AUTH_BRIDGE_URL="https://<your-domain>"
 ```
+
+## Rate limiting (aggressive defaults)
+
+This Worker enforces rate limits on **every request** before route handling:
+
+- Per-IP limiter (`RATE_LIMIT_PER_IP`): `8` requests / `10` seconds
+- Global limiter (`RATE_LIMIT_GLOBAL`): `120` requests / `10` seconds
+- Refresh limiter (`RATE_LIMIT_REFRESH_PER_IP`): `1` request / `60` seconds per IP on `POST /v1/oauth/refresh`
+- OAuth start limiter (`RATE_LIMIT_START_PER_IP`): `1` request / `60` seconds per IP on `POST /v1/oauth/start`
+- OAuth start global limiter (`RATE_LIMIT_START_GLOBAL`): `10` requests / `10` seconds on `POST /v1/oauth/start`
+
+Both limiters are configured in `wrangler.jsonc` (and `wrangler.example.jsonc`).
+
+### Why two layers
+
+- Per-IP protects against noisy clients.
+- Global protects total Worker spend during broad traffic spikes.
+
+### Add WAF rate limiting as a second guardrail
+
+Workers rate limiting counters are local to Cloudflare locations, so add WAF rules for account-level bill protection:
+
+1. Create a WAF rate limiting rule for `/v1/oauth/start` and `/v1/oauth/refresh`.
+2. Track by client IP.
+3. Use a strict threshold (for example, 10-20 requests/minute per IP).
+4. Action: `Managed Challenge` or `Block` with a mitigation timeout.
+
+Using both Worker bindings + WAF gives better protection against unexpected traffic bills.
