@@ -62,6 +62,7 @@ cargo test
 - Command output is JSON by default.
 - Configuration is stored locally per profile in SQLite.
 - In bridge mode, `client_id` and `client_secret` are configured on the bridge service only.
+- `auth login` requests all Connected Vehicle, Energy, and Location scopes by default. Use `--scopes` or `VOLVO_SCOPES` to override the requested scope set.
 
 ## VC Cli Auth Service
 
