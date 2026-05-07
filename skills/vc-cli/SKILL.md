@@ -89,6 +89,7 @@ VIN-based commands resolve VIN in this order:
 4. User prompt to choose a default when multiple VINs are discovered
 
 VINs should come from API discovery (`vehicle list`); do not rely on manual VIN insertion flows.
+When multiple VINs are discovered in non-interactive contexts (stdin is not a TTY), resolution fails with an actionable error; pass `--vin` or preconfigure a default VIN first.
 
 Use this command to set/replace the profile default:
 
@@ -131,6 +132,12 @@ vc-cli auth token-set --access-token <token> [--refresh-token <token>] [--expire
 | `--scope` | no | Scope string |
 | `--token-type` | no | Token type (`Bearer` default) |
 | `--token-endpoint` | no | Source token endpoint URL |
+
+Prefer environment variables for secret values to reduce shell-history/process-listing exposure:
+
+```bash
+VOLVO_ACCESS_TOKEN="<token>" VOLVO_REFRESH_TOKEN="<token>" vc-cli auth token-set --access-token "$VOLVO_ACCESS_TOKEN" --refresh-token "$VOLVO_REFRESH_TOKEN"
+```
 
 ### VIN/API-key vehicle read commands
 
@@ -186,5 +193,6 @@ vc-cli vehicle commands engine-start --runtime-minutes 10 --api-key "$VCC_API_KE
 
 - Output is JSON-first.
 - Never print or store sensitive token/API key values in logs or transcripts.
+- For `auth token-set`, prefer env vars (`VOLVO_ACCESS_TOKEN`, `VOLVO_REFRESH_TOKEN`, `VOLVO_TOKEN_ENDPOINT`) over raw literal tokens in shell command history.
 - Treat `vehicle commands *` as write-like remote actions and require explicit user intent before invoking.
 - Prefer `--api-host` for one-off calls and `--profile` when switching persistent local context.
