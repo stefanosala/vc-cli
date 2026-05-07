@@ -24,9 +24,9 @@ if (update && semverGt(update.latest, packageJson.version)) {
 }
 
 const PLATFORM_PACKAGES = {
-  "darwin-arm64": "vc-cli-darwin-arm64",
-  "linux-x64": "vc-cli-linux-x64",
-  "win32-x64": "vc-cli-win32-x64",
+  "darwin-arm64": "@stefanosala/vc-cli-darwin-arm64",
+  "linux-x64": "@stefanosala/vc-cli-linux-x64",
+  "win32-x64": "@stefanosala/vc-cli-win32-x64",
 };
 
 const platformKey = `${process.platform}-${process.arch}`;
@@ -51,7 +51,7 @@ try {
 } catch {
   console.error(
     `Could not find package ${platformPackage}. This usually means the platform ` +
-      `package was not installed. Try reinstalling: npm i -g vc-cli`
+      `package was not installed. Try reinstalling: npm i -g @stefanosala/vc-cli`
   );
   process.exit(1);
 }

@@ -1,5 +1,5 @@
 {
-  "name": "vc-cli-win32-x64",
+  "name": "@stefanosala/vc-cli-win32-x64",
   "version": "0.1.0",
   "description": "Platform binary for vc-cli (Windows x64)",
   "os": ["win32"],
