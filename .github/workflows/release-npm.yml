@@ -22,10 +22,10 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
@@ -48,8 +48,10 @@ jobs:
           ls -la release/
 
       - name: Prepare platform packages
+        id: prepare_platform
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          MISSING_BINARIES=0
 
           declare -A BINARY_MAP=(
             ["vc-cli-darwin-arm64"]="npm/cli-darwin-arm64/vc-cli"
@@ -69,8 +71,17 @@ jobs:
               ls -la "$pkg_dir/"
             else
               echo "::warning::No binary found for $release_name"
+              MISSING_BINARIES=$((MISSING_BINARIES + 1))
             fi
           done
+
+          echo "missing_binaries=$MISSING_BINARIES" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release binaries
+        if: ${{ !inputs.dry_run && steps.prepare_platform.outputs.missing_binaries != '0' }}
+        run: |
+          echo "::error::Missing ${{ steps.prepare_platform.outputs.missing_binaries }} expected release binaries. Refusing to publish incomplete npm packages."
+          exit 1
 
       - name: Prepare main package
         run: |
