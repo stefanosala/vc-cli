@@ -1,0 +1,23 @@
+{
+  "name": "vc-cli",
+  "version": "0.1.0",
+  "description": "Volvo Cars API CLI",
+  "bin": {
+    "vc-cli": "run.js"
+  },
+  "files": ["run.js"],
+  "type": "module",
+  "dependencies": {
+    "semver": "7.7.2",
+    "update-notifier": "7.3.1"
+  },
+  "optionalDependencies": {
+    "vc-cli-darwin-arm64": "0.1.0",
+    "vc-cli-linux-x64": "0.1.0",
+    "vc-cli-win32-x64": "0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}

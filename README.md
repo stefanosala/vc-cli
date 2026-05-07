@@ -15,6 +15,13 @@ cargo build
 cargo run -- --help
 ```
 
+Global npm install (after package is published):
+
+```bash
+npm i -g vc-cli
+vc-cli --help
+```
+
 ## Quick Start
 
 1. Log in with the default auth bridge (`https://vc-cli.com`):
@@ -88,6 +95,23 @@ npx wrangler secret put VOLVO_CLIENT_ID
 npx wrangler secret put VOLVO_CLIENT_SECRET
 npm run deploy
 ```
+
+## npm Release Flow
+
+This repository now mirrors the Day One npm distribution model:
+
+- `.github/workflows/build-binaries.yml` builds tagged binaries and attaches `vc-cli-<platform>` assets to the GitHub release.
+- `.github/workflows/release-npm.yml` downloads release assets, updates npm package versions from the tag, and publishes:
+  - `vc-cli` (launcher package)
+  - `vc-cli-darwin-arm64`
+  - `vc-cli-linux-x64`
+  - `vc-cli-win32-x64`
+
+Recommended release steps:
+
+1. Push a semantic tag such as `v0.2.0` (triggers binary build + release assets).
+2. Run `Release npm` workflow with `tag=v0.2.0` and `dry_run=true`.
+3. Re-run with `dry_run=false` once the dry run output looks correct.
 
 ## License
 
