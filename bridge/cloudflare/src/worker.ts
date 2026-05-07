@@ -8,7 +8,6 @@ interface Env {
 
 interface BridgeStartRequest {
   scope?: string;
-  auth_issuer?: string;
   local_callback_url: string;
   nonce: string;
 }
@@ -58,7 +57,7 @@ async function handleStart(request: Request, env: Env, origin: string): Promise<
   const localCallbackUrl = normalizeLocalCallbackUrl(body.local_callback_url);
   const nonce = normalizeRequired(body.nonce, "nonce");
   const scope = normalizeOptional(body.scope) ?? DEFAULT_SCOPE;
-  const authIssuer = normalizeOptional(body.auth_issuer) ?? env.VOLVO_AUTH_ISSUER ?? DEFAULT_AUTH_ISSUER;
+  const authIssuer = configuredAuthIssuer(env);
   const clientId = normalizeRequired(env.VOLVO_CLIENT_ID, "VOLVO_CLIENT_ID");
 
   const discovery = await fetchDiscovery(authIssuer);
@@ -140,9 +139,9 @@ async function handleCallback(request: Request, env: Env, origin: string): Promi
 }
 
 async function handleRefresh(request: Request, env: Env): Promise<Response> {
-  const body = await readJson<{ refresh_token?: string; auth_issuer?: string }>(request);
+  const body = await readJson<{ refresh_token?: string }>(request);
   const refreshToken = normalizeRequired(body.refresh_token, "refresh_token");
-  const authIssuer = normalizeOptional(body.auth_issuer) ?? env.VOLVO_AUTH_ISSUER ?? DEFAULT_AUTH_ISSUER;
+  const authIssuer = configuredAuthIssuer(env);
   const discovery = await fetchDiscovery(authIssuer);
   const response = await fetch(discovery.token_endpoint, {
     method: "POST",
@@ -182,7 +181,12 @@ async function exchangeAuthorizationCode(
   refresh_token?: string;
   scope?: string;
 }> {
-  const response = await fetch(session.tokenEndpoint, {
+  const tokenEndpoint = validateDiscoveryEndpoint(
+    session.tokenEndpoint,
+    new URL(configuredAuthIssuer(env)),
+    "token_endpoint",
+  );
+  const response = await fetch(tokenEndpoint, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -222,6 +226,7 @@ async function exchangeAuthorizationCode(
 
 async function fetchDiscovery(issuerRaw: string): Promise<OidcDiscovery> {
   const issuer = normalizeIssuer(issuerRaw);
+  const issuerUrl = new URL(issuer);
   const response = await fetch(`${issuer}/.well-known/openid-configuration`, {
     headers: { accept: "application/json" },
   });
@@ -232,7 +237,18 @@ async function fetchDiscovery(issuerRaw: string): Promise<OidcDiscovery> {
   if (!parsed.authorization_endpoint || !parsed.token_endpoint) {
     throw new Error("oidc_discovery_invalid");
   }
-  return parsed;
+  return {
+    authorization_endpoint: validateDiscoveryEndpoint(
+      parsed.authorization_endpoint,
+      issuerUrl,
+      "authorization_endpoint",
+    ),
+    token_endpoint: validateDiscoveryEndpoint(parsed.token_endpoint, issuerUrl, "token_endpoint"),
+  };
+}
+
+function configuredAuthIssuer(env: Env): string {
+  return normalizeIssuer(env.VOLVO_AUTH_ISSUER ?? DEFAULT_AUTH_ISSUER);
 }
 
 function handoffPage(callbackUrl: string, fields: Record<string, string>): Response {
@@ -306,10 +322,35 @@ function normalizeLocalCallbackUrl(raw: string): string {
 
 function normalizeIssuer(raw: string): string {
   const parsed = new URL(normalizeRequired(raw, "auth_issuer"));
+  if (parsed.protocol !== "https:") {
+    throw new Error("auth_issuer_must_use_https");
+  }
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   parsed.search = "";
   parsed.hash = "";
   return parsed.toString().replace(/\/$/, "");
+}
+
+function validateDiscoveryEndpoint(endpointRaw: string, issuer: URL, field: string): string {
+  const endpoint = new URL(normalizeRequired(endpointRaw, field));
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username ||
+    endpoint.password ||
+    endpoint.origin !== issuer.origin ||
+    !isIssuerPath(endpoint.pathname, issuer.pathname)
+  ) {
+    throw new Error(`${field}_outside_configured_issuer`);
+  }
+  endpoint.hash = "";
+  return endpoint.toString();
+}
+
+function isIssuerPath(endpointPath: string, issuerPath: string): boolean {
+  if (issuerPath === "/" || issuerPath === "") {
+    return true;
+  }
+  return endpointPath === issuerPath || endpointPath.startsWith(`${issuerPath}/`);
 }
 
 function normalizeRequired(raw: string | null | undefined, field: string): string {

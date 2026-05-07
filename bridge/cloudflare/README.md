@@ -12,6 +12,8 @@ This package hosts:
 ## Security model
 
 - `VOLVO_CLIENT_ID` and `VOLVO_CLIENT_SECRET` are configured as Worker secrets.
+- The public OAuth endpoints always use the Worker's configured Volvo issuer (`VOLVO_AUTH_ISSUER`, or the built-in Volvo default); callers cannot override issuer discovery.
+- Discovered authorization and token endpoints must use HTTPS and share the configured issuer origin before the Worker sends confidential client credentials.
 - Access and refresh tokens are **not persisted** in bridge storage.
 - KV stores only short-lived pre-auth session metadata (`state`, PKCE verifier, loopback callback URL, nonce).
 - Callback handoff target is limited to loopback callback URLs (`127.0.0.1`, `localhost`, `::1`).

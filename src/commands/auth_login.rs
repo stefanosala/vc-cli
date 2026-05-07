@@ -62,20 +62,13 @@ pub async fn execute(
     args: AuthLoginArgs,
 ) -> Result<AuthLoginOutput> {
     let scopes = non_empty(args.scopes, "scopes")?;
-    let auth_issuer = non_empty(args.auth_issuer, "auth_issuer")?;
     let listen_timeout_seconds = normalize_timeout(args.auth_listen_timeout_seconds)?;
     let http_client = Client::new();
 
     let token_set = if let Some(bridge_url) = normalize_optional(args.auth_bridge_url) {
-        bridge_login(
-            &http_client,
-            &bridge_url,
-            &auth_issuer,
-            &scopes,
-            listen_timeout_seconds,
-        )
-        .await?
+        bridge_login(&http_client, &bridge_url, &scopes, listen_timeout_seconds).await?
     } else {
+        let auth_issuer = non_empty(args.auth_issuer, "auth_issuer")?;
         legacy_login(
             &http_client,
             non_empty_option(args.client_id, "client_id")?,
@@ -225,7 +218,6 @@ async fn legacy_login(
 #[derive(Debug, Serialize)]
 struct BridgeStartRequest {
     scope: String,
-    auth_issuer: String,
     local_callback_url: String,
     nonce: String,
 }
@@ -247,7 +239,6 @@ struct BridgeHandoffPayload {
 async fn bridge_login(
     http_client: &Client,
     bridge_url: &str,
-    auth_issuer: &str,
     scopes: &str,
     listen_timeout_seconds: u64,
 ) -> Result<PersistableTokenSet> {
@@ -259,7 +250,6 @@ async fn bridge_login(
         .post(join_url_path(&normalized_bridge, "/v1/oauth/start")?)
         .json(&BridgeStartRequest {
             scope: scopes.to_owned(),
-            auth_issuer: auth_issuer.to_owned(),
             local_callback_url: local_callback_url.clone(),
             nonce: nonce.clone(),
         })
