@@ -18,7 +18,7 @@ npm i -g vc-cli
 vc-cli --help
 ```
 
-Install the Cursor skill:
+Install the skills for your agent:
 
 ```bash
 npx skills add stefanosala/vc-cli
