@@ -14,7 +14,7 @@ VC Cli is a command-line interface for interacting with the Volvo Cars Connected
 Global npm install:
 
 ```bash
-npm i -g vc-cli
+npm i -g @stefanosala/vc-cli
 vc-cli --help
 ```
 

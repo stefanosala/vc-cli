@@ -1,5 +1,5 @@
 {
-  "name": "vc-cli",
+  "name": "@stefanosala/vc-cli",
   "version": "0.1.0",
   "description": "Volvo Cars API CLI",
   "bin": {
@@ -12,9 +12,9 @@
     "update-notifier": "7.3.1"
   },
   "optionalDependencies": {
-    "vc-cli-darwin-arm64": "0.1.0",
-    "vc-cli-linux-x64": "0.1.0",
-    "vc-cli-win32-x64": "0.1.0"
+    "@stefanosala/vc-cli-darwin-arm64": "0.1.0",
+    "@stefanosala/vc-cli-linux-x64": "0.1.0",
+    "@stefanosala/vc-cli-win32-x64": "0.1.0"
   },
   "publishConfig": {
     "access": "public"

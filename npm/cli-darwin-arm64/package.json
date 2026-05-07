@@ -1,5 +1,5 @@
 {
-  "name": "vc-cli-darwin-arm64",
+  "name": "@stefanosala/vc-cli-darwin-arm64",
   "version": "0.1.0",
   "description": "Platform binary for vc-cli (macOS arm64)",
   "os": ["darwin"],
