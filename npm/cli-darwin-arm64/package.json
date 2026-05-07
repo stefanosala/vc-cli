@@ -1,0 +1,15 @@
+{
+  "name": "vc-cli-darwin-arm64",
+  "version": "0.1.0",
+  "description": "Platform binary for vc-cli (macOS arm64)",
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "bin": {
+    "vc-cli": "vc-cli"
+  },
+  "files": ["vc-cli"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}

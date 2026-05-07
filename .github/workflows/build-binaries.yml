@@ -1,0 +1,109 @@
+name: Build Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to attach release binaries to (e.g. v0.1.0)"
+        required: true
+
+concurrency:
+  group: build-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.npm_pkg }})
+    runs-on: ${{ matrix.os }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            npm_pkg: cli-darwin-arm64
+            binary: vc-cli
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            npm_pkg: cli-linux-x64
+            binary: vc-cli
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            npm_pkg: cli-win32-x64
+            binary: vc-cli.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Stamp version from tag
+        shell: bash
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "Cargo.toml version set to $VERSION"
+          grep '^version' Cargo.toml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.npm_pkg }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+          if-no-files-found: error
+
+  release:
+    name: Attach binaries to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Rename binaries for release
+        run: |
+          mkdir -p release
+          for dir in artifacts/cli-*; do
+            pkg=$(basename "$dir")
+            target=${pkg#cli-}
+            for file in "$dir"/*; do
+              base=$(basename "$file")
+              ext=""
+              if [[ "$base" == *.exe ]]; then
+                ext=".exe"
+              fi
+              cp "$file" "release/vc-cli-${target}${ext}"
+            done
+          done
+          ls -la release/
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" release/* --repo "$GITHUB_REPOSITORY" --generate-notes \
+            || gh release upload "$TAG" release/* --repo "$GITHUB_REPOSITORY" --clobber
