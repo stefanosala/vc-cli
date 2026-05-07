@@ -5,7 +5,7 @@
   "bin": {
     "vc-cli": "run.js"
   },
-  "files": ["run.js"],
+  "files": ["run.js", "README.md"],
   "type": "module",
   "dependencies": {
     "semver": "7.7.2",
