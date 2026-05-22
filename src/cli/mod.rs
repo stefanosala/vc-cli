@@ -1,12 +1,13 @@
 use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
+use std::path::PathBuf;
 
 use crate::commands::{
     auth_login, auth_logout, auth_token_set, auth_whoami, energy_get, location_get,
     vehicle_commands, vehicle_get, vehicle_shared, vehicle_vin, vehicle_windows_get,
 };
-use crate::config::{DEFAULT_API_HOST, DEFAULT_PROFILE_NAME, load_config_env, resolve_config_dir};
+use crate::config::{DEFAULT_API_HOST, DEFAULT_PROFILE_NAME, resolve_config_dir};
 use crate::http::normalize_base_url;
 use crate::store::sqlite::{Profile, Store};
 
@@ -98,10 +99,10 @@ struct AuthLoginCliArgs {
     #[arg(long, env = "VOLVO_AUTH_ISSUER", default_value = crate::config::DEFAULT_AUTH_ISSUER)]
     auth_issuer: Option<String>,
 
-    #[arg(long, env = "VOLVO_CLIENT_ID")]
+    #[arg(long)]
     client_id: Option<String>,
 
-    #[arg(long, env = "VOLVO_CLIENT_SECRET")]
+    #[arg(long)]
     client_secret: Option<String>,
 
     #[arg(long, env = "VOLVO_REDIRECT_URI", default_value = crate::config::DEFAULT_AUTH_REDIRECT_URI)]
@@ -372,7 +373,10 @@ struct VehicleVinDefaultCliArgs {
 
 pub async fn run() -> Result<()> {
     let config_dir = resolve_config_dir()?;
-    load_config_env(&config_dir)?;
+    run_with_config_dir(config_dir).await
+}
+
+pub async fn run_with_config_dir(config_dir: PathBuf) -> Result<()> {
     let cli = Cli::parse();
     let store_path = config_dir.join("state.db");
     let store = Store::open(&store_path)?;

@@ -17,7 +17,7 @@ use crate::config::{
     DEFAULT_AUTH_ISSUER, DEFAULT_AUTH_LISTEN_TIMEOUT_SECONDS, DEFAULT_AUTH_REDIRECT_URI,
     DEFAULT_SCOPES, save_config_values,
 };
-use crate::http::client::{OAuthTokenResponse, VolvoClient};
+use crate::http::client::{OAuthDiscovery, OAuthTokenResponse, VolvoClient};
 use crate::http::normalize_base_url;
 use crate::store::sqlite::{PersistedTokenSet, Profile, Store, unix_now};
 
@@ -182,15 +182,15 @@ fn resolve_or_prompt_config_value(
     provided: Option<String>,
     hidden: bool,
 ) -> Result<(String, bool)> {
+    if let Some(value) = provided {
+        return Ok((non_empty(value, label)?, true));
+    }
+
     if let Ok(value) = std::env::var(env_name) {
         let normalized = value.trim().to_owned();
         if !normalized.is_empty() {
             return Ok((normalized, false));
         }
-    }
-
-    if let Some(value) = provided {
-        return Ok((non_empty(value, label)?, true));
     }
 
     let value = if hidden {
@@ -259,7 +259,9 @@ async fn local_oauth_login(
     listen_timeout_seconds: u64,
 ) -> Result<PersistableTokenSet> {
     let normalized_issuer = normalize_base_url(auth_issuer)?;
+    let issuer_url = validate_auth_issuer(&normalized_issuer)?;
     let discovery = VolvoClient::fetch_discovery(&normalized_issuer, http_client).await?;
+    validate_oauth_discovery(&issuer_url, &discovery)?;
     let (listener, expected_path) = bind_redirect_listener(redirect_uri).await?;
     let state = random_urlsafe(24);
     let code_verifier = random_urlsafe(64);
@@ -298,6 +300,49 @@ async fn local_oauth_login(
         client_id,
         client_secret,
     )
+}
+
+fn validate_auth_issuer(auth_issuer: &str) -> Result<Url> {
+    let issuer_url = Url::parse(auth_issuer).context("auth issuer is invalid")?;
+    if issuer_url.scheme() != "https" {
+        return Err(anyhow!("auth issuer must use https"));
+    }
+    Ok(issuer_url)
+}
+
+fn validate_oauth_discovery(issuer_url: &Url, discovery: &OAuthDiscovery) -> Result<()> {
+    validate_discovered_endpoint(
+        issuer_url,
+        &discovery.authorization_endpoint,
+        "authorization endpoint",
+    )?;
+    validate_discovered_endpoint(issuer_url, &discovery.token_endpoint, "token endpoint")
+}
+
+fn validate_discovered_endpoint(issuer_url: &Url, endpoint: &str, label: &str) -> Result<()> {
+    let endpoint_url = Url::parse(endpoint).with_context(|| format!("{label} is invalid"))?;
+    if endpoint_url.scheme() != "https" {
+        return Err(anyhow!("{label} must use https"));
+    }
+    if !same_origin(issuer_url, &endpoint_url) {
+        return Err(anyhow!("{label} must share the auth issuer origin"));
+    }
+
+    let issuer_path = issuer_url.path().trim_end_matches('/');
+    if !issuer_path.is_empty()
+        && issuer_path != "/"
+        && !endpoint_url.path().starts_with(&format!("{issuer_path}/"))
+        && endpoint_url.path() != issuer_path
+    {
+        return Err(anyhow!("{label} must be within the auth issuer path"));
+    }
+    Ok(())
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 fn build_authorization_url(
@@ -339,7 +384,15 @@ fn persistable_token_set(
     })
 }
 
-async fn bind_redirect_listener(redirect_uri: &str) -> Result<(TcpListener, String)> {
+enum CallbackListener {
+    Single(TcpListener),
+    Dual {
+        ipv4: TcpListener,
+        ipv6: TcpListener,
+    },
+}
+
+async fn bind_redirect_listener(redirect_uri: &str) -> Result<(CallbackListener, String)> {
     let redirect_url = Url::parse(redirect_uri).context("redirect URI is invalid")?;
     if redirect_url.scheme() != "http" {
         return Err(anyhow!(
@@ -358,12 +411,25 @@ async fn bind_redirect_listener(redirect_uri: &str) -> Result<(TcpListener, Stri
         ));
     }
 
-    let listener = if host == "::1" {
-        TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await
+    let listener = if host.eq_ignore_ascii_case("localhost") {
+        bind_localhost_listeners(port).await?
+    } else if host == "::1" {
+        CallbackListener::Single(
+            TcpListener::bind((Ipv6Addr::LOCALHOST, port))
+                .await
+                .with_context(|| {
+                    format!("failed to bind OAuth callback listener on {redirect_uri}")
+                })?,
+        )
     } else {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await
-    }
-    .with_context(|| format!("failed to bind OAuth callback listener on {redirect_uri}"))?;
+        CallbackListener::Single(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                .await
+                .with_context(|| {
+                    format!("failed to bind OAuth callback listener on {redirect_uri}")
+                })?,
+        )
+    };
 
     let expected_path = if redirect_url.path().is_empty() {
         "/".to_owned()
@@ -371,6 +437,16 @@ async fn bind_redirect_listener(redirect_uri: &str) -> Result<(TcpListener, Stri
         redirect_url.path().to_owned()
     };
     Ok((listener, expected_path))
+}
+
+async fn bind_localhost_listeners(port: u16) -> Result<CallbackListener> {
+    let ipv4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+        .await
+        .context("failed to bind IPv4 localhost OAuth callback listener")?;
+    match TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await {
+        Ok(ipv6) => Ok(CallbackListener::Dual { ipv4, ipv6 }),
+        Err(_) => Ok(CallbackListener::Single(ipv4)),
+    }
 }
 
 fn is_loopback_redirect_host(host: &str) -> bool {
@@ -382,14 +458,14 @@ fn is_loopback_redirect_host(host: &str) -> bool {
 }
 
 async fn wait_for_authorization_callback(
-    listener: TcpListener,
+    listener: CallbackListener,
     expected_path: &str,
     expected_state: &str,
     listen_timeout_seconds: u64,
 ) -> Result<AuthorizationCallback> {
     let (mut socket, _) = timeout(
         Duration::from_secs(listen_timeout_seconds),
-        listener.accept(),
+        accept_callback(listener),
     )
     .await
     .context("timed out waiting for OAuth callback")?
@@ -405,6 +481,12 @@ async fn wait_for_authorization_callback(
     let callback_url = Url::parse(&format!("http://localhost{target}"))
         .context("invalid localhost callback URL")?;
     if callback_url.path() != expected_path {
+        write_callback_response(
+            &mut socket,
+            "Login failed",
+            "The OAuth callback path did not match the configured redirect URI. You can return to the terminal.",
+        )
+        .await?;
         return Err(anyhow!(
             "unexpected callback path `{}`; expected `{expected_path}`",
             callback_url.path()
@@ -436,9 +518,23 @@ async fn wait_for_authorization_callback(
     }
     let state = get("state").ok_or_else(|| anyhow!("OAuth callback did not include state"))?;
     if state != expected_state {
+        write_callback_response(
+            &mut socket,
+            "Login failed",
+            "The OAuth callback state did not match this login attempt. You can return to the terminal.",
+        )
+        .await?;
         return Err(anyhow!("OAuth callback state mismatch"));
     }
-    let code = get("code").ok_or_else(|| anyhow!("OAuth callback did not include code"))?;
+    let Some(code) = get("code") else {
+        write_callback_response(
+            &mut socket,
+            "Login failed",
+            "The OAuth callback did not include an authorization code. You can return to the terminal.",
+        )
+        .await?;
+        return Err(anyhow!("OAuth callback did not include code"));
+    };
     write_callback_response(
         &mut socket,
         "Login successful",
@@ -446,6 +542,20 @@ async fn wait_for_authorization_callback(
     )
     .await?;
     Ok(AuthorizationCallback { code })
+}
+
+async fn accept_callback(
+    listener: CallbackListener,
+) -> std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)> {
+    match listener {
+        CallbackListener::Single(listener) => listener.accept().await,
+        CallbackListener::Dual { ipv4, ipv6 } => {
+            tokio::select! {
+                result = ipv4.accept() => result,
+                result = ipv6.accept() => result,
+            }
+        }
+    }
 }
 
 async fn write_callback_response(
@@ -541,8 +651,9 @@ fn parse_request_line(request_line: &str) -> Result<(&str, &str)> {
 mod tests {
     use super::{
         build_authorization_url, is_loopback_redirect_host, parse_form_body, parse_request_line,
-        pkce_challenge,
+        pkce_challenge, validate_auth_issuer, validate_oauth_discovery,
     };
+    use crate::http::client::OAuthDiscovery;
 
     #[test]
     fn parse_request_line_supports_post() {
@@ -593,5 +704,34 @@ mod tests {
         assert!(is_loopback_redirect_host("localhost"));
         assert!(is_loopback_redirect_host("vc-cli.localtest.me"));
         assert!(!is_loopback_redirect_host("example.com"));
+    }
+
+    #[test]
+    fn auth_issuer_must_use_https() {
+        assert!(validate_auth_issuer("https://volvoid.eu.volvocars.com").is_ok());
+        assert!(validate_auth_issuer("http://volvoid.eu.volvocars.com").is_err());
+    }
+
+    #[test]
+    fn discovery_endpoints_must_match_issuer_origin() {
+        let issuer =
+            validate_auth_issuer("https://volvoid.eu.volvocars.com").expect("valid issuer");
+        let valid = OAuthDiscovery {
+            authorization_endpoint: "https://volvoid.eu.volvocars.com/oauth2/auth".to_owned(),
+            token_endpoint: "https://volvoid.eu.volvocars.com/oauth2/token".to_owned(),
+        };
+        assert!(validate_oauth_discovery(&issuer, &valid).is_ok());
+
+        let cross_origin = OAuthDiscovery {
+            authorization_endpoint: "https://evil.example.com/oauth2/auth".to_owned(),
+            token_endpoint: "https://volvoid.eu.volvocars.com/oauth2/token".to_owned(),
+        };
+        assert!(validate_oauth_discovery(&issuer, &cross_origin).is_err());
+
+        let insecure = OAuthDiscovery {
+            authorization_endpoint: "https://volvoid.eu.volvocars.com/oauth2/auth".to_owned(),
+            token_endpoint: "http://volvoid.eu.volvocars.com/oauth2/token".to_owned(),
+        };
+        assert!(validate_oauth_discovery(&issuer, &insecure).is_err());
     }
 }
