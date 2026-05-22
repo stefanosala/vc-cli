@@ -25,6 +25,8 @@ Install the skills for your agent:
 npx skills add stefanosala/vc-cli
 ```
 
+Agent-facing command guidance lives in `skills/vc-cli/SKILL.md` (the repo `@skills` entry for this CLI).
+
 ## Quick Start
 
 1. Log in with Volvo OAuth:
@@ -32,6 +34,14 @@ npx skills add stefanosala/vc-cli
 ```bash
 vc-cli auth login
 ```
+
+For headless hosts (agents/servers), use:
+
+```bash
+vc-cli auth login --headless
+```
+
+This prints an authorization URL. Open it in any browser, complete login, then paste the redirected callback URL back into the CLI.
 
 If developer credentials are missing, the command shows the Volvo developer account URL and redirect URI to use, then waits for you to return and enter the API key, client ID, and client secret.
 
@@ -68,12 +78,23 @@ vc-cli auth whoami
 vc-cli location get
 ```
 
+## Agent Skills
+
+If you are using an AI agent (for example via Cursor skills), install:
+
+```bash
+npx skills add stefanosala/vc-cli
+```
+
+Then reference `skills/vc-cli/SKILL.md` for command map, auth workflows, and safety notes (including headless login guidance).
+
 ## Notes
 
 - Command output is JSON by default.
 - Configuration is loaded from `~/.config/vc-cli/config` in env variable format before CLI parsing.
 - Profile/session/VIN state is stored locally per profile in SQLite.
 - `auth login` starts a temporary local HTTP listener for the OAuth redirect.
+- `auth login --headless` skips browser/listener setup, prints the authorize URL, and prompts for the redirected callback URL.
 - `auth login` prompts for missing `VCC_API_KEY`, `VOLVO_CLIENT_ID`, and `VOLVO_CLIENT_SECRET`, then saves them to `~/.config/vc-cli/config`.
 - `auth login` requests all Connected Vehicle, Energy, and Location scopes by default. Use `--scopes` or `VOLVO_SCOPES` to override the requested scope set.
 

@@ -114,6 +114,9 @@ struct AuthLoginCliArgs {
         default_value_t = crate::config::DEFAULT_AUTH_LISTEN_TIMEOUT_SECONDS
     )]
     auth_listen_timeout_seconds: u64,
+
+    #[arg(long)]
+    headless: bool,
 }
 
 #[derive(Debug, Args)]
@@ -407,6 +410,7 @@ pub async fn run_with_config_dir(config_dir: PathBuf) -> Result<()> {
                         client_secret: login.client_secret,
                         redirect_uri: login.redirect_uri,
                         auth_listen_timeout_seconds: login.auth_listen_timeout_seconds,
+                        headless: login.headless,
                     },
                 )
                 .await?;
@@ -972,6 +976,12 @@ mod tests {
             "--redirect-uri",
             "http://localtest.me:1410/callback",
         ]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn auth_login_parses_headless_mode() {
+        let parsed = Cli::try_parse_from(["vc-cli", "auth", "login", "--headless"]);
         assert!(parsed.is_ok());
     }
 

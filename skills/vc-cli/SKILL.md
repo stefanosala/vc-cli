@@ -22,7 +22,7 @@ cargo run -- <command> [flags]
 
 ## Command Map
 
-- `auth login` - Start browser-based OAuth login and persist session tokens.
+- `auth login` - Start OAuth login (browser listener by default, or headless pasteback with `--headless`) and persist session tokens.
 - `auth token-set` - Persist tokens directly (script/manual token flow).
 - `auth whoami` - Print current session identity info.
 - `auth logout` - Clear local auth session.
@@ -110,7 +110,7 @@ vc-cli vehicle vin default --vin <VIN> --api-key "$VCC_API_KEY"
 ### `auth login`
 
 ```bash
-vc-cli auth login [--scopes <space-separated-scopes>] [--auth-issuer <url>] [--client-id <id>] [--client-secret <secret>] [--redirect-uri <uri>] [--auth-listen-timeout-seconds <seconds>]
+vc-cli auth login [--headless] [--scopes <space-separated-scopes>] [--auth-issuer <url>] [--client-id <id>] [--client-secret <secret>] [--redirect-uri <uri>] [--auth-listen-timeout-seconds <seconds>]
 ```
 
 | Flag | Required | Description |
@@ -121,13 +121,22 @@ vc-cli auth login [--scopes <space-separated-scopes>] [--auth-issuer <url>] [--c
 | `--client-secret` | prompted if missing | Volvo OAuth client secret (`VOLVO_CLIENT_SECRET`) |
 | `--redirect-uri` | no | Registered local redirect URI (`VOLVO_REDIRECT_URI` default is `http://127.0.0.1:1410/callback`) |
 | `--auth-listen-timeout-seconds` | no | Local callback listener timeout |
+| `--headless` | no | Skip browser open + local callback listener; print auth URL and prompt for pasted callback URL |
 
 `auth login` also prompts for missing `VCC_API_KEY`. If any of `VCC_API_KEY`, `VOLVO_CLIENT_ID`, or `VOLVO_CLIENT_SECRET` is missing, it first tells the user to create and publish a Volvo app at `https://developer.volvocars.com/account/`, shows the redirect URI to configure, and asks them to return to the terminal after publishing. Newly provided values are saved to `~/.config/vc-cli/config`.
+
+Headless flow details:
+
+1. Run `vc-cli auth login --headless` on the agent/server.
+2. Open the printed authorization URL in any browser and complete login/consent.
+3. Browser redirects to the configured localhost callback (for example `http://127.0.0.1:1410/callback?...`) and likely shows a connection error because no listener is running.
+4. Copy the full redirected URL from the browser address bar and paste it into the CLI prompt.
 
 Example:
 
 ```bash
 vc-cli auth login
+vc-cli auth login --headless
 vc-cli auth login --redirect-uri http://localtest.me:1410/callback
 ```
 

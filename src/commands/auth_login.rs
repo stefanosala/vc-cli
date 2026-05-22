@@ -29,6 +29,7 @@ pub struct AuthLoginArgs {
     pub client_secret: Option<String>,
     pub redirect_uri: Option<String>,
     pub auth_listen_timeout_seconds: u64,
+    pub headless: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +50,7 @@ impl Default for AuthLoginArgs {
             client_secret: None,
             redirect_uri: Some(DEFAULT_AUTH_REDIRECT_URI.to_owned()),
             auth_listen_timeout_seconds: DEFAULT_AUTH_LISTEN_TIMEOUT_SECONDS,
+            headless: false,
         }
     }
 }
@@ -90,7 +92,8 @@ pub async fn execute(
     ];
     let values_to_save = values_to_save.into_iter().flatten().collect::<Vec<_>>();
     save_config_values(config_dir, &values_to_save)?;
-    let listen_timeout_seconds = normalize_timeout(args.auth_listen_timeout_seconds)?;
+    let listen_timeout_seconds =
+        resolve_listen_timeout(args.auth_listen_timeout_seconds, args.headless)?;
     let http_client = Client::new();
     let token_set = local_oauth_login(
         &http_client,
@@ -100,6 +103,7 @@ pub async fn execute(
         &redirect_uri,
         &scopes,
         listen_timeout_seconds,
+        args.headless,
     )
     .await?;
 
@@ -221,6 +225,13 @@ fn normalize_timeout(value: u64) -> Result<u64> {
     Ok(value)
 }
 
+fn resolve_listen_timeout(value: u64, headless: bool) -> Result<Option<u64>> {
+    if headless {
+        return Ok(None);
+    }
+    Ok(Some(normalize_timeout(value)?))
+}
+
 fn random_urlsafe(bytes_len: usize) -> String {
     let mut bytes = vec![0u8; bytes_len];
     rand::rng().fill(bytes.as_mut_slice());
@@ -256,13 +267,14 @@ async fn local_oauth_login(
     client_secret: &str,
     redirect_uri: &str,
     scopes: &str,
-    listen_timeout_seconds: u64,
+    listen_timeout_seconds: Option<u64>,
+    headless: bool,
 ) -> Result<PersistableTokenSet> {
     let normalized_issuer = normalize_base_url(auth_issuer)?;
     let issuer_url = validate_auth_issuer(&normalized_issuer)?;
     let discovery = VolvoClient::fetch_discovery(&normalized_issuer, http_client).await?;
     validate_oauth_discovery(&issuer_url, &discovery)?;
-    let (listener, expected_path) = bind_redirect_listener(redirect_uri).await?;
+    let redirect_target = parse_redirect_callback_target(redirect_uri)?;
     let state = random_urlsafe(24);
     let code_verifier = random_urlsafe(64);
     let code_challenge = pkce_challenge(&code_verifier);
@@ -274,15 +286,21 @@ async fn local_oauth_login(
         &state,
         &code_challenge,
     )?;
-
-    webbrowser::open(authorization_url.as_str()).with_context(|| {
-        format!("failed to open browser for Volvo OAuth URL: {authorization_url}")
-    })?;
-    eprintln!("Opened browser for Volvo login. Waiting for OAuth callback on {redirect_uri} ...");
-
-    let callback =
-        wait_for_authorization_callback(listener, &expected_path, &state, listen_timeout_seconds)
-            .await?;
+    let callback = if headless {
+        prompt_headless_callback(&authorization_url, &redirect_target.expected_path, &state)?
+    } else {
+        let (listener, expected_path) =
+            bind_redirect_listener(redirect_uri, &redirect_target).await?;
+        let timeout_seconds = listen_timeout_seconds
+            .ok_or_else(|| anyhow!("missing listener timeout for browser login flow"))?;
+        webbrowser::open(authorization_url.as_str()).with_context(|| {
+            format!("failed to open browser for Volvo OAuth URL: {authorization_url}")
+        })?;
+        eprintln!(
+            "Opened browser for Volvo login. Waiting for OAuth callback on {redirect_uri} ..."
+        );
+        wait_for_authorization_callback(listener, &expected_path, &state, timeout_seconds).await?
+    };
     let token_response = VolvoClient::exchange_authorization_code(
         http_client,
         &discovery.token_endpoint,
@@ -300,6 +318,78 @@ async fn local_oauth_login(
         client_id,
         client_secret,
     )
+}
+
+fn prompt_headless_callback(
+    authorization_url: &Url,
+    expected_path: &str,
+    expected_state: &str,
+) -> Result<AuthorizationCallback> {
+    eprintln!(
+        "\
+Headless login mode:
+1. Open this URL in any browser where you can sign in:
+   {authorization_url}
+2. Complete login/consent.
+3. Copy the final redirected URL from the browser and paste it below.
+"
+    );
+    let pasted = prompt_text("Paste redirected callback URL")?;
+    parse_pasted_callback(&pasted, expected_path, expected_state)
+}
+
+fn parse_pasted_callback(
+    pasted: &str,
+    expected_path: &str,
+    expected_state: &str,
+) -> Result<AuthorizationCallback> {
+    let raw = pasted.trim();
+    if raw.is_empty() {
+        return Err(anyhow!("callback URL cannot be empty"));
+    }
+
+    let callback_url = if raw.starts_with("http://") || raw.starts_with("https://") {
+        Url::parse(raw).context("invalid callback URL")?
+    } else if raw.starts_with('/') {
+        Url::parse(&format!("http://localhost{raw}")).context("invalid callback path")?
+    } else if raw.contains('=') {
+        Url::parse(&format!(
+            "http://localhost{expected_path}?{}",
+            raw.trim_start_matches('?')
+        ))
+        .context("invalid callback query")?
+    } else {
+        return Err(anyhow!(
+            "invalid callback input; paste a full URL (or path/query containing code and state)"
+        ));
+    };
+
+    if callback_url.path() != expected_path {
+        return Err(anyhow!(
+            "unexpected callback path `{}`; expected `{expected_path}`",
+            callback_url.path()
+        ));
+    }
+    let params = callback_url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect::<Vec<(String, String)>>();
+    let get = |key: &str| -> Option<String> {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    if let Some(error) = get("error") {
+        let detail = get("error_description").unwrap_or_default();
+        return Err(anyhow!("OAuth callback failed: {error} {detail}"));
+    }
+    let state = get("state").ok_or_else(|| anyhow!("OAuth callback did not include state"))?;
+    if state != expected_state {
+        return Err(anyhow!("OAuth callback state mismatch"));
+    }
+    let code = get("code").ok_or_else(|| anyhow!("OAuth callback did not include code"))?;
+    Ok(AuthorizationCallback { code })
 }
 
 fn validate_auth_issuer(auth_issuer: &str) -> Result<Url> {
@@ -392,7 +482,14 @@ enum CallbackListener {
     },
 }
 
-async fn bind_redirect_listener(redirect_uri: &str) -> Result<(CallbackListener, String)> {
+#[derive(Debug)]
+struct RedirectCallbackTarget {
+    host: String,
+    port: u16,
+    expected_path: String,
+}
+
+fn parse_redirect_callback_target(redirect_uri: &str) -> Result<RedirectCallbackTarget> {
     let redirect_url = Url::parse(redirect_uri).context("redirect URI is invalid")?;
     if redirect_url.scheme() != "http" {
         return Err(anyhow!(
@@ -405,38 +502,50 @@ async fn bind_redirect_listener(redirect_uri: &str) -> Result<(CallbackListener,
     let port = redirect_url
         .port()
         .ok_or_else(|| anyhow!("redirect URI must include an explicit port"))?;
+    if port == 0 {
+        return Err(anyhow!("redirect URI port must be greater than zero"));
+    }
     if !is_loopback_redirect_host(host) {
         return Err(anyhow!(
             "redirect URI host `{host}` is not a supported loopback host"
         ));
     }
-
-    let listener = if host.eq_ignore_ascii_case("localhost") {
-        bind_localhost_listeners(port).await?
-    } else if host == "::1" {
-        CallbackListener::Single(
-            TcpListener::bind((Ipv6Addr::LOCALHOST, port))
-                .await
-                .with_context(|| {
-                    format!("failed to bind OAuth callback listener on {redirect_uri}")
-                })?,
-        )
-    } else {
-        CallbackListener::Single(
-            TcpListener::bind((Ipv4Addr::LOCALHOST, port))
-                .await
-                .with_context(|| {
-                    format!("failed to bind OAuth callback listener on {redirect_uri}")
-                })?,
-        )
-    };
-
     let expected_path = if redirect_url.path().is_empty() {
         "/".to_owned()
     } else {
         redirect_url.path().to_owned()
     };
-    Ok((listener, expected_path))
+    Ok(RedirectCallbackTarget {
+        host: host.to_owned(),
+        port,
+        expected_path,
+    })
+}
+
+async fn bind_redirect_listener(
+    redirect_uri: &str,
+    target: &RedirectCallbackTarget,
+) -> Result<(CallbackListener, String)> {
+    let listener = if target.host.eq_ignore_ascii_case("localhost") {
+        bind_localhost_listeners(target.port).await?
+    } else if target.host == "::1" {
+        CallbackListener::Single(
+            TcpListener::bind((Ipv6Addr::LOCALHOST, target.port))
+                .await
+                .with_context(|| {
+                    format!("failed to bind OAuth callback listener on {redirect_uri}")
+                })?,
+        )
+    } else {
+        CallbackListener::Single(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, target.port))
+                .await
+                .with_context(|| {
+                    format!("failed to bind OAuth callback listener on {redirect_uri}")
+                })?,
+        )
+    };
+    Ok((listener, target.expected_path.clone()))
 }
 
 async fn bind_localhost_listeners(port: u16) -> Result<CallbackListener> {
@@ -650,8 +759,9 @@ fn parse_request_line(request_line: &str) -> Result<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_authorization_url, is_loopback_redirect_host, parse_form_body, parse_request_line,
-        pkce_challenge, validate_auth_issuer, validate_oauth_discovery,
+        build_authorization_url, is_loopback_redirect_host, parse_form_body, parse_pasted_callback,
+        parse_redirect_callback_target, parse_request_line, pkce_challenge, resolve_listen_timeout,
+        validate_auth_issuer, validate_oauth_discovery,
     };
     use crate::http::client::OAuthDiscovery;
 
@@ -733,5 +843,55 @@ mod tests {
             token_endpoint: "http://volvoid.eu.volvocars.com/oauth2/token".to_owned(),
         };
         assert!(validate_oauth_discovery(&issuer, &insecure).is_err());
+    }
+
+    #[test]
+    fn parse_redirect_callback_target_validates_loopback_http_uri() {
+        let target = parse_redirect_callback_target("http://127.0.0.1:1410/callback")
+            .expect("target should parse");
+        assert_eq!(target.expected_path, "/callback");
+        assert_eq!(target.port, 1410);
+        assert!(parse_redirect_callback_target("https://127.0.0.1:1410/callback").is_err());
+        assert!(parse_redirect_callback_target("http://example.com:1410/callback").is_err());
+        assert!(parse_redirect_callback_target("http://127.0.0.1:0/callback").is_err());
+    }
+
+    #[test]
+    fn resolve_listen_timeout_skips_validation_when_headless() {
+        assert_eq!(
+            resolve_listen_timeout(0, true).expect("headless timeout should skip validation"),
+            None
+        );
+        assert!(resolve_listen_timeout(0, false).is_err());
+    }
+
+    #[test]
+    fn parse_pasted_callback_accepts_full_url() {
+        let callback = parse_pasted_callback(
+            "http://127.0.0.1:1410/callback?code=abc&state=xyz",
+            "/callback",
+            "xyz",
+        )
+        .expect("callback should parse");
+        assert_eq!(callback.code, "abc");
+    }
+
+    #[test]
+    fn parse_pasted_callback_accepts_query_only_input() {
+        let callback =
+            parse_pasted_callback("code=abc&state=xyz", "/callback", "xyz").expect("should parse");
+        assert_eq!(callback.code, "abc");
+    }
+
+    #[test]
+    fn parse_pasted_callback_rejects_state_mismatch() {
+        assert!(
+            parse_pasted_callback(
+                "http://127.0.0.1:1410/callback?code=abc&state=wrong",
+                "/callback",
+                "xyz"
+            )
+            .is_err()
+        );
     }
 }
