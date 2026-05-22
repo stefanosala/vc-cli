@@ -25,6 +25,8 @@ Install the skills for your agent:
 npx skills add stefanosala/vc-cli
 ```
 
+Agent-facing command guidance lives in `skills/vc-cli/SKILL.md` (the repo `@skills` entry for this CLI).
+
 ## Quick Start
 
 1. Log in with Volvo OAuth:
@@ -75,6 +77,16 @@ vc-cli auth whoami
 # Get latest known location
 vc-cli location get
 ```
+
+## Agent Skills
+
+If you are using an AI agent (for example via Cursor skills), install:
+
+```bash
+npx skills add stefanosala/vc-cli
+```
+
+Then reference `skills/vc-cli/SKILL.md` for command map, auth workflows, and safety notes (including headless login guidance).
 
 ## Notes
 
