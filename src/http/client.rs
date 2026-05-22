@@ -412,21 +412,6 @@ impl VolvoClient {
             .context("failed to refresh access token")?;
         parse_token_response(response).await
     }
-
-    pub async fn refresh_access_token_bridge(
-        client: &reqwest::Client,
-        refresh_endpoint: &str,
-        refresh_token: &str,
-    ) -> Result<OAuthTokenResponse> {
-        let response = client
-            .post(refresh_endpoint)
-            .header("accept", "application/json")
-            .json(&serde_json::json!({ "refresh_token": refresh_token }))
-            .send()
-            .await
-            .context("failed to refresh access token via bridge")?;
-        parse_token_response(response).await
-    }
 }
 
 fn vehicle_path(vin: &str, suffix: &str) -> String {

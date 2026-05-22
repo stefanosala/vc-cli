@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
+use std::path::PathBuf;
 
 use crate::commands::{
     auth_login, auth_logout, auth_token_set, auth_whoami, energy_get, location_get,
@@ -95,12 +96,17 @@ struct AuthLoginCliArgs {
     #[arg(long, env = "VOLVO_SCOPES", default_value = crate::config::DEFAULT_SCOPES)]
     scopes: String,
 
-    #[arg(
-        long,
-        env = "VOLVO_AUTH_BRIDGE_URL",
-        default_value = crate::config::DEFAULT_AUTH_BRIDGE_URL
-    )]
-    auth_bridge_url: Option<String>,
+    #[arg(long, env = "VOLVO_AUTH_ISSUER", default_value = crate::config::DEFAULT_AUTH_ISSUER)]
+    auth_issuer: Option<String>,
+
+    #[arg(long)]
+    client_id: Option<String>,
+
+    #[arg(long)]
+    client_secret: Option<String>,
+
+    #[arg(long, env = "VOLVO_REDIRECT_URI", default_value = crate::config::DEFAULT_AUTH_REDIRECT_URI)]
+    redirect_uri: Option<String>,
 
     #[arg(
         long,
@@ -366,8 +372,12 @@ struct VehicleVinDefaultCliArgs {
 }
 
 pub async fn run() -> Result<()> {
-    let cli = Cli::parse();
     let config_dir = resolve_config_dir()?;
+    run_with_config_dir(config_dir).await
+}
+
+pub async fn run_with_config_dir(config_dir: PathBuf) -> Result<()> {
+    let cli = Cli::parse();
     let store_path = config_dir.join("state.db");
     let store = Store::open(&store_path)?;
 
@@ -389,9 +399,13 @@ pub async fn run() -> Result<()> {
                     &store,
                     &profile,
                     &base_url,
+                    &config_dir,
                     auth_login::AuthLoginArgs {
                         scopes: login.scopes,
-                        auth_bridge_url: login.auth_bridge_url,
+                        auth_issuer: login.auth_issuer,
+                        client_id: login.client_id,
+                        client_secret: login.client_secret,
+                        redirect_uri: login.redirect_uri,
                         auth_listen_timeout_seconds: login.auth_listen_timeout_seconds,
                     },
                 )
@@ -930,25 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_login_parses_with_bridge_only() {
-        let parsed = Cli::try_parse_from([
-            "vc-cli",
-            "auth",
-            "login",
-            "--auth-bridge-url",
-            "https://bridge.example.com",
-        ]);
-        assert!(parsed.is_ok());
-    }
-
-    #[test]
-    fn auth_login_parses_with_default_bridge() {
-        let parsed = Cli::try_parse_from(["vc-cli", "auth", "login"]);
-        assert!(parsed.is_ok());
-    }
-
-    #[test]
-    fn auth_login_rejects_client_credentials() {
+    fn auth_login_parses_with_client_credentials() {
         let parsed = Cli::try_parse_from([
             "vc-cli",
             "auth",
@@ -958,7 +954,25 @@ mod tests {
             "--client-secret",
             "secret-a",
         ]);
-        assert!(parsed.is_err());
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn auth_login_parses_with_default_issuer_and_redirect() {
+        let parsed = Cli::try_parse_from(["vc-cli", "auth", "login"]);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn auth_login_parses_with_custom_redirect_uri() {
+        let parsed = Cli::try_parse_from([
+            "vc-cli",
+            "auth",
+            "login",
+            "--redirect-uri",
+            "http://localtest.me:1410/callback",
+        ]);
+        assert!(parsed.is_ok());
     }
 
     #[test]

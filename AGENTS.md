@@ -32,7 +32,7 @@ This file tells coding agents where to look first for implementation examples an
 When implementing features, start here:
 
 - CLI routing and command wiring: `src/cli/mod.rs`
-- Auth login bridge handoff logic: `src/commands/auth_login.rs`
+- Auth login local OAuth callback logic: `src/commands/auth_login.rs`
 - Auth identity/session commands: `src/commands/auth_whoami.rs`, `src/commands/auth_logout.rs`
 - Vehicle windows command: `src/commands/vehicle_windows_get.rs`
 - VIN management commands: `src/commands/vehicle_vin.rs`
@@ -44,6 +44,8 @@ When implementing features, start here:
 
 - Connected Vehicle API base URL default: `https://api.volvocars.com`
 - Auth issuer default: `https://volvoid.eu.volvocars.com`
+- Auth redirect URI default: `http://127.0.0.1:1410/callback`
+- Startup config file: `~/.config/vc-cli/config` in env variable format; load before CLI parsing.
 - Runtime API host precedence:
   1. `--api-host`
   2. `VOLVO_API_HOST`
@@ -51,7 +53,7 @@ When implementing features, start here:
   4. built-in default (`https://api.volvocars.com`)
 - API key precedence for vehicle calls:
   1. `--api-key`
-  2. `VCC_API_KEY`
+  2. `VCC_API_KEY` from the process environment or loaded config file
 
 ## VIN Management Rules
 
