@@ -92,7 +92,8 @@ pub async fn execute(
     ];
     let values_to_save = values_to_save.into_iter().flatten().collect::<Vec<_>>();
     save_config_values(config_dir, &values_to_save)?;
-    let listen_timeout_seconds = normalize_timeout(args.auth_listen_timeout_seconds)?;
+    let listen_timeout_seconds =
+        resolve_listen_timeout(args.auth_listen_timeout_seconds, args.headless)?;
     let http_client = Client::new();
     let token_set = local_oauth_login(
         &http_client,
@@ -224,6 +225,13 @@ fn normalize_timeout(value: u64) -> Result<u64> {
     Ok(value)
 }
 
+fn resolve_listen_timeout(value: u64, headless: bool) -> Result<Option<u64>> {
+    if headless {
+        return Ok(None);
+    }
+    Ok(Some(normalize_timeout(value)?))
+}
+
 fn random_urlsafe(bytes_len: usize) -> String {
     let mut bytes = vec![0u8; bytes_len];
     rand::rng().fill(bytes.as_mut_slice());
@@ -259,13 +267,14 @@ async fn local_oauth_login(
     client_secret: &str,
     redirect_uri: &str,
     scopes: &str,
-    listen_timeout_seconds: u64,
+    listen_timeout_seconds: Option<u64>,
     headless: bool,
 ) -> Result<PersistableTokenSet> {
     let normalized_issuer = normalize_base_url(auth_issuer)?;
     let issuer_url = validate_auth_issuer(&normalized_issuer)?;
     let discovery = VolvoClient::fetch_discovery(&normalized_issuer, http_client).await?;
     validate_oauth_discovery(&issuer_url, &discovery)?;
+    let redirect_target = parse_redirect_callback_target(redirect_uri)?;
     let state = random_urlsafe(24);
     let code_verifier = random_urlsafe(64);
     let code_challenge = pkce_challenge(&code_verifier);
@@ -278,18 +287,19 @@ async fn local_oauth_login(
         &code_challenge,
     )?;
     let callback = if headless {
-        let expected_path = expected_redirect_path(redirect_uri)?;
-        prompt_headless_callback(&authorization_url, &expected_path, &state)?
+        prompt_headless_callback(&authorization_url, &redirect_target.expected_path, &state)?
     } else {
-        let (listener, expected_path) = bind_redirect_listener(redirect_uri).await?;
+        let (listener, expected_path) =
+            bind_redirect_listener(redirect_uri, &redirect_target).await?;
+        let timeout_seconds = listen_timeout_seconds
+            .ok_or_else(|| anyhow!("missing listener timeout for browser login flow"))?;
         webbrowser::open(authorization_url.as_str()).with_context(|| {
             format!("failed to open browser for Volvo OAuth URL: {authorization_url}")
         })?;
         eprintln!(
             "Opened browser for Volvo login. Waiting for OAuth callback on {redirect_uri} ..."
         );
-        wait_for_authorization_callback(listener, &expected_path, &state, listen_timeout_seconds)
-            .await?
+        wait_for_authorization_callback(listener, &expected_path, &state, timeout_seconds).await?
     };
     let token_response = VolvoClient::exchange_authorization_code(
         http_client,
@@ -472,7 +482,14 @@ enum CallbackListener {
     },
 }
 
-async fn bind_redirect_listener(redirect_uri: &str) -> Result<(CallbackListener, String)> {
+#[derive(Debug)]
+struct RedirectCallbackTarget {
+    host: String,
+    port: u16,
+    expected_path: String,
+}
+
+fn parse_redirect_callback_target(redirect_uri: &str) -> Result<RedirectCallbackTarget> {
     let redirect_url = Url::parse(redirect_uri).context("redirect URI is invalid")?;
     if redirect_url.scheme() != "http" {
         return Err(anyhow!(
@@ -485,63 +502,50 @@ async fn bind_redirect_listener(redirect_uri: &str) -> Result<(CallbackListener,
     let port = redirect_url
         .port()
         .ok_or_else(|| anyhow!("redirect URI must include an explicit port"))?;
+    if port == 0 {
+        return Err(anyhow!("redirect URI port must be greater than zero"));
+    }
     if !is_loopback_redirect_host(host) {
         return Err(anyhow!(
             "redirect URI host `{host}` is not a supported loopback host"
         ));
     }
-
-    let listener = if host.eq_ignore_ascii_case("localhost") {
-        bind_localhost_listeners(port).await?
-    } else if host == "::1" {
-        CallbackListener::Single(
-            TcpListener::bind((Ipv6Addr::LOCALHOST, port))
-                .await
-                .with_context(|| {
-                    format!("failed to bind OAuth callback listener on {redirect_uri}")
-                })?,
-        )
-    } else {
-        CallbackListener::Single(
-            TcpListener::bind((Ipv4Addr::LOCALHOST, port))
-                .await
-                .with_context(|| {
-                    format!("failed to bind OAuth callback listener on {redirect_uri}")
-                })?,
-        )
-    };
-
     let expected_path = if redirect_url.path().is_empty() {
         "/".to_owned()
     } else {
         redirect_url.path().to_owned()
     };
-    Ok((listener, expected_path))
+    Ok(RedirectCallbackTarget {
+        host: host.to_owned(),
+        port,
+        expected_path,
+    })
 }
 
-fn expected_redirect_path(redirect_uri: &str) -> Result<String> {
-    let redirect_url = Url::parse(redirect_uri).context("redirect URI is invalid")?;
-    if redirect_url.scheme() != "http" {
-        return Err(anyhow!(
-            "redirect URI must use http for local OAuth callbacks"
-        ));
-    }
-    let host = redirect_url
-        .host_str()
-        .ok_or_else(|| anyhow!("redirect URI must include a host"))?;
-    if !is_loopback_redirect_host(host) {
-        return Err(anyhow!(
-            "redirect URI host `{host}` is not a supported loopback host"
-        ));
-    }
-    redirect_url
-        .port()
-        .ok_or_else(|| anyhow!("redirect URI must include an explicit port"))?;
-    Ok(if redirect_url.path().is_empty() {
-        "/".to_owned()
+async fn bind_redirect_listener(
+    redirect_uri: &str,
+    target: &RedirectCallbackTarget,
+) -> Result<(CallbackListener, String)> {
+    let listener = if target.host.eq_ignore_ascii_case("localhost") {
+        bind_localhost_listeners(target.port).await?
+    } else if target.host == "::1" {
+        CallbackListener::Single(
+            TcpListener::bind((Ipv6Addr::LOCALHOST, target.port))
+                .await
+                .with_context(|| {
+                    format!("failed to bind OAuth callback listener on {redirect_uri}")
+                })?,
+        )
     } else {
-        redirect_url.path().to_owned()
-    })
+        CallbackListener::Single(
+            TcpListener::bind((Ipv4Addr::LOCALHOST, target.port))
+                .await
+                .with_context(|| {
+                    format!("failed to bind OAuth callback listener on {redirect_uri}")
+                })?,
+        )
+    };
+    Ok((listener, target.expected_path.clone()))
 }
 
 async fn bind_localhost_listeners(port: u16) -> Result<CallbackListener> {
@@ -755,8 +759,8 @@ fn parse_request_line(request_line: &str) -> Result<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_authorization_url, expected_redirect_path, is_loopback_redirect_host,
-        parse_form_body, parse_pasted_callback, parse_request_line, pkce_challenge,
+        build_authorization_url, is_loopback_redirect_host, parse_form_body, parse_pasted_callback,
+        parse_redirect_callback_target, parse_request_line, pkce_challenge, resolve_listen_timeout,
         validate_auth_issuer, validate_oauth_discovery,
     };
     use crate::http::client::OAuthDiscovery;
@@ -842,12 +846,23 @@ mod tests {
     }
 
     #[test]
-    fn expected_redirect_path_validates_loopback_http_uri() {
-        let path =
-            expected_redirect_path("http://127.0.0.1:1410/callback").expect("path should parse");
-        assert_eq!(path, "/callback");
-        assert!(expected_redirect_path("https://127.0.0.1:1410/callback").is_err());
-        assert!(expected_redirect_path("http://example.com:1410/callback").is_err());
+    fn parse_redirect_callback_target_validates_loopback_http_uri() {
+        let target = parse_redirect_callback_target("http://127.0.0.1:1410/callback")
+            .expect("target should parse");
+        assert_eq!(target.expected_path, "/callback");
+        assert_eq!(target.port, 1410);
+        assert!(parse_redirect_callback_target("https://127.0.0.1:1410/callback").is_err());
+        assert!(parse_redirect_callback_target("http://example.com:1410/callback").is_err());
+        assert!(parse_redirect_callback_target("http://127.0.0.1:0/callback").is_err());
+    }
+
+    #[test]
+    fn resolve_listen_timeout_skips_validation_when_headless() {
+        assert_eq!(
+            resolve_listen_timeout(0, true).expect("headless timeout should skip validation"),
+            None
+        );
+        assert!(resolve_listen_timeout(0, false).is_err());
     }
 
     #[test]
