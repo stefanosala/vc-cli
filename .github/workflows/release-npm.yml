@@ -56,6 +56,7 @@ jobs:
 
           declare -A BINARY_MAP=(
             ["vc-cli-darwin-arm64"]="npm/cli-darwin-arm64/vc-cli"
+            ["vc-cli-linux-arm64"]="npm/cli-linux-arm64/vc-cli"
             ["vc-cli-linux-x64"]="npm/cli-linux-x64/vc-cli"
             ["vc-cli-win32-x64.exe"]="npm/cli-win32-x64/vc-cli.exe"
           )

@@ -32,6 +32,10 @@ jobs:
             os: ubuntu-24.04
             npm_pkg: cli-linux-x64
             binary: vc-cli
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            npm_pkg: cli-linux-arm64
+            binary: vc-cli
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             npm_pkg: cli-win32-x64

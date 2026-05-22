@@ -25,6 +25,7 @@ if (update && semverGt(update.latest, packageJson.version)) {
 
 const PLATFORM_PACKAGES = {
   "darwin-arm64": "@stefanosala/vc-cli-darwin-arm64",
+  "linux-arm64": "@stefanosala/vc-cli-linux-arm64",
   "linux-x64": "@stefanosala/vc-cli-linux-x64",
   "win32-x64": "@stefanosala/vc-cli-win32-x64",
 };

@@ -1,0 +1,19 @@
+{
+  "name": "@stefanosala/vc-cli-linux-arm64",
+  "version": "0.1.0",
+  "description": "Platform binary for vc-cli (Linux arm64)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stefanosala/vc-cli"
+  },
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "bin": {
+    "vc-cli": "vc-cli"
+  },
+  "files": ["vc-cli"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}

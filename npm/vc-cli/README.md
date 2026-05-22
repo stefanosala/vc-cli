@@ -39,6 +39,7 @@ format and saves newly entered credentials there.
 The launcher depends on one of:
 
 - `@stefanosala/vc-cli-darwin-arm64`
+- `@stefanosala/vc-cli-linux-arm64`
 - `@stefanosala/vc-cli-linux-x64`
 - `@stefanosala/vc-cli-win32-x64`
 
