@@ -33,6 +33,14 @@ npx skills add stefanosala/vc-cli
 vc-cli auth login
 ```
 
+For headless hosts (agents/servers), use:
+
+```bash
+vc-cli auth login --headless
+```
+
+This prints an authorization URL. Open it in any browser, complete login, then paste the redirected callback URL back into the CLI.
+
 If developer credentials are missing, the command shows the Volvo developer account URL and redirect URI to use, then waits for you to return and enter the API key, client ID, and client secret.
 
 2. Discover your vehicles:
@@ -74,6 +82,7 @@ vc-cli location get
 - Configuration is loaded from `~/.config/vc-cli/config` in env variable format before CLI parsing.
 - Profile/session/VIN state is stored locally per profile in SQLite.
 - `auth login` starts a temporary local HTTP listener for the OAuth redirect.
+- `auth login --headless` skips browser/listener setup, prints the authorize URL, and prompts for the redirected callback URL.
 - `auth login` prompts for missing `VCC_API_KEY`, `VOLVO_CLIENT_ID`, and `VOLVO_CLIENT_SECRET`, then saves them to `~/.config/vc-cli/config`.
 - `auth login` requests all Connected Vehicle, Energy, and Location scopes by default. Use `--scopes` or `VOLVO_SCOPES` to override the requested scope set.
 

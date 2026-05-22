@@ -29,6 +29,7 @@ pub struct AuthLoginArgs {
     pub client_secret: Option<String>,
     pub redirect_uri: Option<String>,
     pub auth_listen_timeout_seconds: u64,
+    pub headless: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +50,7 @@ impl Default for AuthLoginArgs {
             client_secret: None,
             redirect_uri: Some(DEFAULT_AUTH_REDIRECT_URI.to_owned()),
             auth_listen_timeout_seconds: DEFAULT_AUTH_LISTEN_TIMEOUT_SECONDS,
+            headless: false,
         }
     }
 }
@@ -100,6 +102,7 @@ pub async fn execute(
         &redirect_uri,
         &scopes,
         listen_timeout_seconds,
+        args.headless,
     )
     .await?;
 
@@ -257,12 +260,12 @@ async fn local_oauth_login(
     redirect_uri: &str,
     scopes: &str,
     listen_timeout_seconds: u64,
+    headless: bool,
 ) -> Result<PersistableTokenSet> {
     let normalized_issuer = normalize_base_url(auth_issuer)?;
     let issuer_url = validate_auth_issuer(&normalized_issuer)?;
     let discovery = VolvoClient::fetch_discovery(&normalized_issuer, http_client).await?;
     validate_oauth_discovery(&issuer_url, &discovery)?;
-    let (listener, expected_path) = bind_redirect_listener(redirect_uri).await?;
     let state = random_urlsafe(24);
     let code_verifier = random_urlsafe(64);
     let code_challenge = pkce_challenge(&code_verifier);
@@ -274,15 +277,20 @@ async fn local_oauth_login(
         &state,
         &code_challenge,
     )?;
-
-    webbrowser::open(authorization_url.as_str()).with_context(|| {
-        format!("failed to open browser for Volvo OAuth URL: {authorization_url}")
-    })?;
-    eprintln!("Opened browser for Volvo login. Waiting for OAuth callback on {redirect_uri} ...");
-
-    let callback =
+    let callback = if headless {
+        let expected_path = expected_redirect_path(redirect_uri)?;
+        prompt_headless_callback(&authorization_url, &expected_path, &state)?
+    } else {
+        let (listener, expected_path) = bind_redirect_listener(redirect_uri).await?;
+        webbrowser::open(authorization_url.as_str()).with_context(|| {
+            format!("failed to open browser for Volvo OAuth URL: {authorization_url}")
+        })?;
+        eprintln!(
+            "Opened browser for Volvo login. Waiting for OAuth callback on {redirect_uri} ..."
+        );
         wait_for_authorization_callback(listener, &expected_path, &state, listen_timeout_seconds)
-            .await?;
+            .await?
+    };
     let token_response = VolvoClient::exchange_authorization_code(
         http_client,
         &discovery.token_endpoint,
@@ -300,6 +308,78 @@ async fn local_oauth_login(
         client_id,
         client_secret,
     )
+}
+
+fn prompt_headless_callback(
+    authorization_url: &Url,
+    expected_path: &str,
+    expected_state: &str,
+) -> Result<AuthorizationCallback> {
+    eprintln!(
+        "\
+Headless login mode:
+1. Open this URL in any browser where you can sign in:
+   {authorization_url}
+2. Complete login/consent.
+3. Copy the final redirected URL from the browser and paste it below.
+"
+    );
+    let pasted = prompt_text("Paste redirected callback URL")?;
+    parse_pasted_callback(&pasted, expected_path, expected_state)
+}
+
+fn parse_pasted_callback(
+    pasted: &str,
+    expected_path: &str,
+    expected_state: &str,
+) -> Result<AuthorizationCallback> {
+    let raw = pasted.trim();
+    if raw.is_empty() {
+        return Err(anyhow!("callback URL cannot be empty"));
+    }
+
+    let callback_url = if raw.starts_with("http://") || raw.starts_with("https://") {
+        Url::parse(raw).context("invalid callback URL")?
+    } else if raw.starts_with('/') {
+        Url::parse(&format!("http://localhost{raw}")).context("invalid callback path")?
+    } else if raw.contains('=') {
+        Url::parse(&format!(
+            "http://localhost{expected_path}?{}",
+            raw.trim_start_matches('?')
+        ))
+        .context("invalid callback query")?
+    } else {
+        return Err(anyhow!(
+            "invalid callback input; paste a full URL (or path/query containing code and state)"
+        ));
+    };
+
+    if callback_url.path() != expected_path {
+        return Err(anyhow!(
+            "unexpected callback path `{}`; expected `{expected_path}`",
+            callback_url.path()
+        ));
+    }
+    let params = callback_url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect::<Vec<(String, String)>>();
+    let get = |key: &str| -> Option<String> {
+        params
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    if let Some(error) = get("error") {
+        let detail = get("error_description").unwrap_or_default();
+        return Err(anyhow!("OAuth callback failed: {error} {detail}"));
+    }
+    let state = get("state").ok_or_else(|| anyhow!("OAuth callback did not include state"))?;
+    if state != expected_state {
+        return Err(anyhow!("OAuth callback state mismatch"));
+    }
+    let code = get("code").ok_or_else(|| anyhow!("OAuth callback did not include code"))?;
+    Ok(AuthorizationCallback { code })
 }
 
 fn validate_auth_issuer(auth_issuer: &str) -> Result<Url> {
@@ -437,6 +517,31 @@ async fn bind_redirect_listener(redirect_uri: &str) -> Result<(CallbackListener,
         redirect_url.path().to_owned()
     };
     Ok((listener, expected_path))
+}
+
+fn expected_redirect_path(redirect_uri: &str) -> Result<String> {
+    let redirect_url = Url::parse(redirect_uri).context("redirect URI is invalid")?;
+    if redirect_url.scheme() != "http" {
+        return Err(anyhow!(
+            "redirect URI must use http for local OAuth callbacks"
+        ));
+    }
+    let host = redirect_url
+        .host_str()
+        .ok_or_else(|| anyhow!("redirect URI must include a host"))?;
+    if !is_loopback_redirect_host(host) {
+        return Err(anyhow!(
+            "redirect URI host `{host}` is not a supported loopback host"
+        ));
+    }
+    redirect_url
+        .port()
+        .ok_or_else(|| anyhow!("redirect URI must include an explicit port"))?;
+    Ok(if redirect_url.path().is_empty() {
+        "/".to_owned()
+    } else {
+        redirect_url.path().to_owned()
+    })
 }
 
 async fn bind_localhost_listeners(port: u16) -> Result<CallbackListener> {
@@ -650,8 +755,9 @@ fn parse_request_line(request_line: &str) -> Result<(&str, &str)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_authorization_url, is_loopback_redirect_host, parse_form_body, parse_request_line,
-        pkce_challenge, validate_auth_issuer, validate_oauth_discovery,
+        build_authorization_url, expected_redirect_path, is_loopback_redirect_host,
+        parse_form_body, parse_pasted_callback, parse_request_line, pkce_challenge,
+        validate_auth_issuer, validate_oauth_discovery,
     };
     use crate::http::client::OAuthDiscovery;
 
@@ -733,5 +839,44 @@ mod tests {
             token_endpoint: "http://volvoid.eu.volvocars.com/oauth2/token".to_owned(),
         };
         assert!(validate_oauth_discovery(&issuer, &insecure).is_err());
+    }
+
+    #[test]
+    fn expected_redirect_path_validates_loopback_http_uri() {
+        let path =
+            expected_redirect_path("http://127.0.0.1:1410/callback").expect("path should parse");
+        assert_eq!(path, "/callback");
+        assert!(expected_redirect_path("https://127.0.0.1:1410/callback").is_err());
+        assert!(expected_redirect_path("http://example.com:1410/callback").is_err());
+    }
+
+    #[test]
+    fn parse_pasted_callback_accepts_full_url() {
+        let callback = parse_pasted_callback(
+            "http://127.0.0.1:1410/callback?code=abc&state=xyz",
+            "/callback",
+            "xyz",
+        )
+        .expect("callback should parse");
+        assert_eq!(callback.code, "abc");
+    }
+
+    #[test]
+    fn parse_pasted_callback_accepts_query_only_input() {
+        let callback =
+            parse_pasted_callback("code=abc&state=xyz", "/callback", "xyz").expect("should parse");
+        assert_eq!(callback.code, "abc");
+    }
+
+    #[test]
+    fn parse_pasted_callback_rejects_state_mismatch() {
+        assert!(
+            parse_pasted_callback(
+                "http://127.0.0.1:1410/callback?code=abc&state=wrong",
+                "/callback",
+                "xyz"
+            )
+            .is_err()
+        );
     }
 }
