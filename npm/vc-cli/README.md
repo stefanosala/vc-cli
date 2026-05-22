@@ -19,6 +19,21 @@ vc-cli auth login
 vc-cli vehicle list
 ```
 
+On first login, `vc-cli` may prompt for Volvo developer credentials:
+
+- `VCC_API_KEY`
+- `VOLVO_CLIENT_ID`
+- `VOLVO_CLIENT_SECRET`
+
+If they are missing, the command shows the Volvo developer account URL and
+the redirect URI to configure. Create and publish a new app at
+<https://developer.volvocars.com/account/> using the shown redirect URI
+(`http://127.0.0.1:1410/callback` by default), then return to the terminal to
+finish login.
+
+The CLI loads configuration from `~/.config/vc-cli/config` in env variable
+format and saves newly entered credentials there.
+
 ## Platform Packages
 
 The launcher depends on one of:
