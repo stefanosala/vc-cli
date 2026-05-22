@@ -5,8 +5,9 @@ VC Cli is a command-line interface for interacting with the Volvo Cars Connected
 ## Prerequisites
 
 - Rust toolchain (stable)
-- Optional custom auth bridge (`VOLVO_AUTH_BRIDGE_URL`); defaults to `https://vc-cli.com`
-- API key for vehicle endpoints (`VCC_API_KEY`)
+- Volvo OAuth client credentials (`VOLVO_CLIENT_ID`, `VOLVO_CLIENT_SECRET`); prompted on first `auth login`
+- Registered OAuth redirect URI; defaults to `http://127.0.0.1:1410/callback`
+- API key for vehicle endpoints (`VCC_API_KEY`); prompted on first `auth login`
 
 ## Install and Run
 
@@ -26,11 +27,13 @@ npx skills add stefanosala/vc-cli
 
 ## Quick Start
 
-1. Log in with the default auth bridge (`https://vc-cli.com`):
+1. Log in with Volvo OAuth:
 
 ```bash
 vc-cli auth login
 ```
+
+If developer credentials are missing, the command shows the Volvo developer account URL and redirect URI to use, then waits for you to return and enter the API key, client ID, and client secret.
 
 2. Discover your vehicles:
 
@@ -68,8 +71,10 @@ vc-cli location get
 ## Notes
 
 - Command output is JSON by default.
-- Configuration is stored locally per profile in SQLite.
-- Volvo OAuth `client_id` and `client_secret` are configured on the bridge service only.
+- Configuration is loaded from `~/.config/vc-cli/config` in env variable format before CLI parsing.
+- Profile/session/VIN state is stored locally per profile in SQLite.
+- `auth login` starts a temporary local HTTP listener for the OAuth redirect.
+- `auth login` prompts for missing `VCC_API_KEY`, `VOLVO_CLIENT_ID`, and `VOLVO_CLIENT_SECRET`, then saves them to `~/.config/vc-cli/config`.
 - `auth login` requests all Connected Vehicle, Energy, and Location scopes by default. Use `--scopes` or `VOLVO_SCOPES` to override the requested scope set.
 
 ## License

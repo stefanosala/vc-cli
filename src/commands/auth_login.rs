@@ -3,23 +3,31 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::Rng;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::io::{self, Write};
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{Duration, timeout};
 use url::Url;
 
-use crate::config::{DEFAULT_AUTH_BRIDGE_URL, DEFAULT_AUTH_LISTEN_TIMEOUT_SECONDS, DEFAULT_SCOPES};
+use crate::config::{
+    DEFAULT_AUTH_ISSUER, DEFAULT_AUTH_LISTEN_TIMEOUT_SECONDS, DEFAULT_AUTH_REDIRECT_URI,
+    DEFAULT_SCOPES, save_config_values,
+};
+use crate::http::client::{OAuthTokenResponse, VolvoClient};
 use crate::http::normalize_base_url;
 use crate::store::sqlite::{PersistedTokenSet, Profile, Store, unix_now};
-
-const BRIDGE_MANAGED_SENTINEL: &str = "bridge-managed";
-const BRIDGE_REFRESH_PATH: &str = "/v1/oauth/refresh";
 
 #[derive(Debug, Clone)]
 pub struct AuthLoginArgs {
     pub scopes: String,
-    pub auth_bridge_url: Option<String>,
+    pub auth_issuer: Option<String>,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    pub redirect_uri: Option<String>,
     pub auth_listen_timeout_seconds: u64,
 }
 
@@ -36,7 +44,10 @@ impl Default for AuthLoginArgs {
     fn default() -> Self {
         Self {
             scopes: DEFAULT_SCOPES.to_owned(),
-            auth_bridge_url: Some(DEFAULT_AUTH_BRIDGE_URL.to_owned()),
+            auth_issuer: Some(DEFAULT_AUTH_ISSUER.to_owned()),
+            client_id: None,
+            client_secret: None,
+            redirect_uri: Some(DEFAULT_AUTH_REDIRECT_URI.to_owned()),
             auth_listen_timeout_seconds: DEFAULT_AUTH_LISTEN_TIMEOUT_SECONDS,
         }
     }
@@ -46,14 +57,51 @@ pub async fn execute(
     store: &Store,
     profile: &Profile,
     base_url: &str,
+    config_dir: &Path,
     args: AuthLoginArgs,
 ) -> Result<AuthLoginOutput> {
     let scopes = non_empty(args.scopes, "scopes")?;
+    let auth_issuer = non_empty_option(args.auth_issuer, "auth issuer", "VOLVO_AUTH_ISSUER")?;
+    let redirect_uri = non_empty_option(args.redirect_uri, "redirect URI", "VOLVO_REDIRECT_URI")?;
+    if credential_setup_instructions_needed(
+        args.client_id.as_deref(),
+        args.client_secret.as_deref(),
+    ) {
+        print_credential_setup_instructions(&redirect_uri);
+    }
+    let (api_key, save_api_key) =
+        resolve_or_prompt_config_value("VCC_API_KEY", "VCC API key", None, true)?;
+    let (client_id, save_client_id) = resolve_or_prompt_config_value(
+        "VOLVO_CLIENT_ID",
+        "Volvo OAuth client ID",
+        args.client_id,
+        false,
+    )?;
+    let (client_secret, save_client_secret) = resolve_or_prompt_config_value(
+        "VOLVO_CLIENT_SECRET",
+        "Volvo OAuth client secret",
+        args.client_secret,
+        true,
+    )?;
+    let values_to_save = [
+        save_api_key.then_some(("VCC_API_KEY", api_key.as_str())),
+        save_client_id.then_some(("VOLVO_CLIENT_ID", client_id.as_str())),
+        save_client_secret.then_some(("VOLVO_CLIENT_SECRET", client_secret.as_str())),
+    ];
+    let values_to_save = values_to_save.into_iter().flatten().collect::<Vec<_>>();
+    save_config_values(config_dir, &values_to_save)?;
     let listen_timeout_seconds = normalize_timeout(args.auth_listen_timeout_seconds)?;
     let http_client = Client::new();
-    let bridge_url = non_empty_option(args.auth_bridge_url, "auth_bridge_url")?;
-    let token_set =
-        bridge_login(&http_client, &bridge_url, &scopes, listen_timeout_seconds).await?;
+    let token_set = local_oauth_login(
+        &http_client,
+        &auth_issuer,
+        &client_id,
+        &client_secret,
+        &redirect_uri,
+        &scopes,
+        listen_timeout_seconds,
+    )
+    .await?;
 
     let expires_at = token_set
         .expires_in
@@ -90,10 +138,80 @@ fn non_empty(value: String, field: &str) -> Result<String> {
     Ok(normalized)
 }
 
-fn non_empty_option(value: Option<String>, field: &str) -> Result<String> {
-    let provided = value
-        .ok_or_else(|| anyhow!("auth login requires --auth-bridge-url or VOLVO_AUTH_BRIDGE_URL"))?;
+fn non_empty_option(value: Option<String>, field: &str, env_name: &str) -> Result<String> {
+    let provided = value.ok_or_else(|| anyhow!("auth login requires {field}; set {env_name}"))?;
     non_empty(provided, field)
+}
+
+fn credential_setup_instructions_needed(
+    client_id: Option<&str>,
+    client_secret: Option<&str>,
+) -> bool {
+    missing_env_value("VCC_API_KEY")
+        || provided_or_env_missing(client_id, "VOLVO_CLIENT_ID")
+        || provided_or_env_missing(client_secret, "VOLVO_CLIENT_SECRET")
+}
+
+fn provided_or_env_missing(provided: Option<&str>, env_name: &str) -> bool {
+    provided.map(str::trim).unwrap_or_default().is_empty() && missing_env_value(env_name)
+}
+
+fn missing_env_value(env_name: &str) -> bool {
+    std::env::var(env_name)
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+}
+
+fn print_credential_setup_instructions(redirect_uri: &str) {
+    eprintln!(
+        "\
+Volvo developer credentials are required before login can continue.
+
+1. Create and publish a new app at:
+   https://developer.volvocars.com/account/
+2. Configure this OAuth redirect URL for the app:
+   {redirect_uri}
+3. After the app is published, return to this terminal and enter the API key, client ID, and client secret.
+"
+    );
+}
+
+fn resolve_or_prompt_config_value(
+    env_name: &str,
+    label: &str,
+    provided: Option<String>,
+    hidden: bool,
+) -> Result<(String, bool)> {
+    if let Ok(value) = std::env::var(env_name) {
+        let normalized = value.trim().to_owned();
+        if !normalized.is_empty() {
+            return Ok((normalized, false));
+        }
+    }
+
+    if let Some(value) = provided {
+        return Ok((non_empty(value, label)?, true));
+    }
+
+    let value = if hidden {
+        rpassword::prompt_password(format!("{label}: "))
+            .with_context(|| format!("failed to read {label}"))?
+    } else {
+        prompt_text(label)?
+    };
+    Ok((non_empty(value, label)?, true))
+}
+
+fn prompt_text(label: &str) -> Result<String> {
+    let mut stderr = io::stderr();
+    write!(stderr, "{label}: ")?;
+    stderr.flush()?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .with_context(|| format!("failed to read {label}"))?;
+    Ok(input)
 }
 
 fn normalize_timeout(value: u64) -> Result<u64> {
@@ -109,6 +227,11 @@ fn random_urlsafe(bytes_len: usize) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
+fn pkce_challenge(verifier: &str) -> String {
+    let digest = Sha256::digest(verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
 #[derive(Debug)]
 struct PersistableTokenSet {
     access_token: String,
@@ -121,102 +244,156 @@ struct PersistableTokenSet {
     client_secret: String,
 }
 
-#[derive(Debug, Serialize)]
-struct BridgeStartRequest {
-    scope: String,
-    local_callback_url: String,
-    nonce: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct BridgeStartResponse {
-    authorization_url: String,
-}
-
 #[derive(Debug)]
-struct BridgeHandoffPayload {
-    access_token: String,
-    refresh_token: Option<String>,
-    scope: Option<String>,
-    token_type: Option<String>,
-    expires_in: Option<u64>,
+struct AuthorizationCallback {
+    code: String,
 }
 
-async fn bridge_login(
+async fn local_oauth_login(
     http_client: &Client,
-    bridge_url: &str,
+    auth_issuer: &str,
+    client_id: &str,
+    client_secret: &str,
+    redirect_uri: &str,
     scopes: &str,
     listen_timeout_seconds: u64,
 ) -> Result<PersistableTokenSet> {
-    let normalized_bridge = normalize_base_url(bridge_url)?;
-    let (listener, local_callback_url) = bind_loopback_listener().await?;
-    let nonce = random_urlsafe(24);
+    let normalized_issuer = normalize_base_url(auth_issuer)?;
+    let discovery = VolvoClient::fetch_discovery(&normalized_issuer, http_client).await?;
+    let (listener, expected_path) = bind_redirect_listener(redirect_uri).await?;
+    let state = random_urlsafe(24);
+    let code_verifier = random_urlsafe(64);
+    let code_challenge = pkce_challenge(&code_verifier);
+    let authorization_url = build_authorization_url(
+        &discovery.authorization_endpoint,
+        client_id,
+        redirect_uri,
+        scopes,
+        &state,
+        &code_challenge,
+    )?;
 
-    let start_response = http_client
-        .post(join_url_path(&normalized_bridge, "/v1/oauth/start")?)
-        .json(&BridgeStartRequest {
-            scope: scopes.to_owned(),
-            local_callback_url: local_callback_url.clone(),
-            nonce: nonce.clone(),
-        })
-        .send()
-        .await
-        .context("failed to start bridge OAuth session")?
-        .error_for_status()
-        .context("bridge start session request failed")?
-        .json::<BridgeStartResponse>()
-        .await
-        .context("failed to parse bridge start session response")?;
-
-    webbrowser::open(&start_response.authorization_url).with_context(|| {
-        format!(
-            "failed to open browser for bridge OAuth URL: {}",
-            &start_response.authorization_url
-        )
+    webbrowser::open(authorization_url.as_str()).with_context(|| {
+        format!("failed to open browser for Volvo OAuth URL: {authorization_url}")
     })?;
-    eprintln!(
-        "Opened browser for Volvo login. Waiting for localhost callback on {local_callback_url} ..."
-    );
+    eprintln!("Opened browser for Volvo login. Waiting for OAuth callback on {redirect_uri} ...");
 
-    let handoff =
-        wait_for_bridge_handoff(listener, "/callback", &nonce, listen_timeout_seconds).await?;
+    let callback =
+        wait_for_authorization_callback(listener, &expected_path, &state, listen_timeout_seconds)
+            .await?;
+    let token_response = VolvoClient::exchange_authorization_code(
+        http_client,
+        &discovery.token_endpoint,
+        client_id,
+        client_secret,
+        redirect_uri,
+        &callback.code,
+        &code_verifier,
+    )
+    .await?;
 
+    persistable_token_set(
+        token_response,
+        discovery.token_endpoint,
+        client_id,
+        client_secret,
+    )
+}
+
+fn build_authorization_url(
+    authorization_endpoint: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    scopes: &str,
+    state: &str,
+    code_challenge: &str,
+) -> Result<Url> {
+    let mut url =
+        Url::parse(authorization_endpoint).context("authorization endpoint is invalid")?;
+    url.query_pairs_mut()
+        .append_pair("response_type", "code")
+        .append_pair("client_id", client_id)
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("scope", scopes)
+        .append_pair("state", state)
+        .append_pair("code_challenge", code_challenge)
+        .append_pair("code_challenge_method", "S256");
+    Ok(url)
+}
+
+fn persistable_token_set(
+    token_response: OAuthTokenResponse,
+    token_endpoint: String,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<PersistableTokenSet> {
     Ok(PersistableTokenSet {
-        access_token: handoff.access_token,
-        refresh_token: handoff.refresh_token,
-        scope: handoff.scope,
-        token_type: handoff.token_type,
-        expires_in: handoff.expires_in,
-        token_endpoint: join_url_path(&normalized_bridge, BRIDGE_REFRESH_PATH)?,
-        client_id: BRIDGE_MANAGED_SENTINEL.to_owned(),
-        client_secret: BRIDGE_MANAGED_SENTINEL.to_owned(),
+        access_token: token_response.access_token,
+        refresh_token: token_response.refresh_token,
+        scope: token_response.scope,
+        token_type: token_response.token_type,
+        expires_in: token_response.expires_in,
+        token_endpoint,
+        client_id: client_id.to_owned(),
+        client_secret: client_secret.to_owned(),
     })
 }
 
-async fn bind_loopback_listener() -> Result<(TcpListener, String)> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .context("failed to bind localhost callback listener")?;
-    let port = listener
-        .local_addr()
-        .context("failed to resolve localhost callback listener address")?
-        .port();
-    Ok((listener, format!("http://127.0.0.1:{port}/callback")))
+async fn bind_redirect_listener(redirect_uri: &str) -> Result<(TcpListener, String)> {
+    let redirect_url = Url::parse(redirect_uri).context("redirect URI is invalid")?;
+    if redirect_url.scheme() != "http" {
+        return Err(anyhow!(
+            "redirect URI must use http for local OAuth callbacks"
+        ));
+    }
+    let host = redirect_url
+        .host_str()
+        .ok_or_else(|| anyhow!("redirect URI must include a host"))?;
+    let port = redirect_url
+        .port()
+        .ok_or_else(|| anyhow!("redirect URI must include an explicit port"))?;
+    if !is_loopback_redirect_host(host) {
+        return Err(anyhow!(
+            "redirect URI host `{host}` is not a supported loopback host"
+        ));
+    }
+
+    let listener = if host == "::1" {
+        TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await
+    } else {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await
+    }
+    .with_context(|| format!("failed to bind OAuth callback listener on {redirect_uri}"))?;
+
+    let expected_path = if redirect_url.path().is_empty() {
+        "/".to_owned()
+    } else {
+        redirect_url.path().to_owned()
+    };
+    Ok((listener, expected_path))
 }
 
-async fn wait_for_bridge_handoff(
+fn is_loopback_redirect_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.eq_ignore_ascii_case("localtest.me")
+        || host.to_ascii_lowercase().ends_with(".localtest.me")
+}
+
+async fn wait_for_authorization_callback(
     listener: TcpListener,
     expected_path: &str,
-    expected_nonce: &str,
+    expected_state: &str,
     listen_timeout_seconds: u64,
-) -> Result<BridgeHandoffPayload> {
+) -> Result<AuthorizationCallback> {
     let (mut socket, _) = timeout(
         Duration::from_secs(listen_timeout_seconds),
         listener.accept(),
     )
     .await
-    .context("timed out waiting for bridge localhost callback")?
-    .context("failed to accept bridge localhost callback connection")?;
+    .context("timed out waiting for OAuth callback")?
+    .context("failed to accept OAuth callback connection")?;
 
     let request_bytes = read_http_request(&mut socket).await?;
     let request = String::from_utf8_lossy(&request_bytes);
@@ -249,27 +426,43 @@ async fn wait_for_bridge_handoff(
     };
     if let Some(error) = get("error") {
         let detail = get("error_description").unwrap_or_default();
-        return Err(anyhow!("bridge callback failed: {error} {detail}"));
-    }
-    let nonce = get("nonce").ok_or_else(|| anyhow!("bridge callback did not include nonce"))?;
-    if nonce != expected_nonce {
-        return Err(anyhow!("bridge callback nonce mismatch"));
-    }
-    let payload = BridgeHandoffPayload {
-        access_token: get("access_token")
-            .ok_or_else(|| anyhow!("bridge callback did not include access_token"))?,
-        refresh_token: get("refresh_token"),
-        scope: get("scope"),
-        token_type: get("token_type"),
-        expires_in: get("expires_in").and_then(|value| value.parse::<u64>().ok()),
-    };
-    socket
-        .write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n<html><body><h1>Login successful</h1><p>You can return to the terminal.</p></body></html>",
+        write_callback_response(
+            &mut socket,
+            "Login failed",
+            "Volvo returned an OAuth error. You can return to the terminal.",
         )
+        .await?;
+        return Err(anyhow!("OAuth callback failed: {error} {detail}"));
+    }
+    let state = get("state").ok_or_else(|| anyhow!("OAuth callback did not include state"))?;
+    if state != expected_state {
+        return Err(anyhow!("OAuth callback state mismatch"));
+    }
+    let code = get("code").ok_or_else(|| anyhow!("OAuth callback did not include code"))?;
+    write_callback_response(
+        &mut socket,
+        "Login successful",
+        "You can return to the terminal.",
+    )
+    .await?;
+    Ok(AuthorizationCallback { code })
+}
+
+async fn write_callback_response(
+    socket: &mut tokio::net::TcpStream,
+    title: &str,
+    message: &str,
+) -> Result<()> {
+    let body = format!("<html><body><h1>{title}</h1><p>{message}</p></body></html>");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    socket
+        .write_all(response.as_bytes())
         .await
-        .context("failed to write localhost callback response")?;
-    Ok(payload)
+        .context("failed to write OAuth callback response")
 }
 
 async fn read_http_request(socket: &mut tokio::net::TcpStream) -> Result<Vec<u8>> {
@@ -344,14 +537,12 @@ fn parse_request_line(request_line: &str) -> Result<(&str, &str)> {
     Ok((method, target))
 }
 
-fn join_url_path(base: &str, path: &str) -> Result<String> {
-    let base_url = Url::parse(base).context("bridge URL is invalid")?;
-    Ok(base_url.join(path)?.to_string())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{join_url_path, parse_form_body, parse_request_line};
+    use super::{
+        build_authorization_url, is_loopback_redirect_host, parse_form_body, parse_request_line,
+        pkce_challenge,
+    };
 
     #[test]
     fn parse_request_line_supports_post() {
@@ -371,9 +562,36 @@ mod tests {
     }
 
     #[test]
-    fn join_url_path_appends_path() {
-        let full = join_url_path("https://bridge.example.com", "/v1/oauth/refresh")
-            .expect("URL should join");
-        assert_eq!(full, "https://bridge.example.com/v1/oauth/refresh");
+    fn authorization_url_includes_pkce_parameters() {
+        let full = build_authorization_url(
+            "https://example.com/oauth2/auth",
+            "client-a",
+            "http://127.0.0.1:1410/callback",
+            "openid conve:vehicle_relation",
+            "state-a",
+            "challenge-a",
+        )
+        .expect("authorization URL should build");
+        let query = full.query().expect("query should exist");
+        assert!(query.contains("response_type=code"));
+        assert!(query.contains("client_id=client-a"));
+        assert!(query.contains("code_challenge=challenge-a"));
+        assert!(query.contains("code_challenge_method=S256"));
+    }
+
+    #[test]
+    fn pkce_challenge_uses_s256() {
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn loopback_redirect_hosts_include_localtest() {
+        assert!(is_loopback_redirect_host("127.0.0.1"));
+        assert!(is_loopback_redirect_host("localhost"));
+        assert!(is_loopback_redirect_host("vc-cli.localtest.me"));
+        assert!(!is_loopback_redirect_host("example.com"));
     }
 }

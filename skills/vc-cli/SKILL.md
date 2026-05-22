@@ -77,7 +77,15 @@ Runtime API host precedence:
 Vehicle API key precedence:
 
 1. `--api-key`
-2. `VCC_API_KEY`
+2. `VCC_API_KEY` from the process environment or loaded config file
+
+Startup loads `~/.config/vc-cli/config` before CLI parsing. The file uses env variable format:
+
+```bash
+VCC_API_KEY='...'
+VOLVO_CLIENT_ID='...'
+VOLVO_CLIENT_SECRET='...'
+```
 
 ## VIN Resolution
 
@@ -102,20 +110,25 @@ vc-cli vehicle vin default --vin <VIN> --api-key "$VCC_API_KEY"
 ### `auth login`
 
 ```bash
-vc-cli auth login [--scopes <space-separated-scopes>] [--auth-bridge-url <url>] [--auth-listen-timeout-seconds <seconds>]
+vc-cli auth login [--scopes <space-separated-scopes>] [--auth-issuer <url>] [--client-id <id>] [--client-secret <secret>] [--redirect-uri <uri>] [--auth-listen-timeout-seconds <seconds>]
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--scopes` | no | Scope set to request (defaults to full Connected Vehicle + Energy + Location scopes) |
-| `--auth-bridge-url` | no | Auth bridge URL (`VOLVO_AUTH_BRIDGE_URL` default is `https://vc-cli.com`) |
+| `--auth-issuer` | no | Volvo auth issuer (`VOLVO_AUTH_ISSUER` default is `https://volvoid.eu.volvocars.com`) |
+| `--client-id` | prompted if missing | Volvo OAuth client ID (`VOLVO_CLIENT_ID`) |
+| `--client-secret` | prompted if missing | Volvo OAuth client secret (`VOLVO_CLIENT_SECRET`) |
+| `--redirect-uri` | no | Registered local redirect URI (`VOLVO_REDIRECT_URI` default is `http://127.0.0.1:1410/callback`) |
 | `--auth-listen-timeout-seconds` | no | Local callback listener timeout |
+
+`auth login` also prompts for missing `VCC_API_KEY`. If any of `VCC_API_KEY`, `VOLVO_CLIENT_ID`, or `VOLVO_CLIENT_SECRET` is missing, it first tells the user to create and publish a Volvo app at `https://developer.volvocars.com/account/`, shows the redirect URI to configure, and asks them to return to the terminal after publishing. Newly provided values are saved to `~/.config/vc-cli/config`.
 
 Example:
 
 ```bash
 vc-cli auth login
-vc-cli auth login --auth-bridge-url https://vc-cli.com
+vc-cli auth login --redirect-uri http://localtest.me:1410/callback
 ```
 
 ### `auth token-set`

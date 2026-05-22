@@ -214,23 +214,14 @@ async fn ensure_fresh_session(store: &Store, profile: &Profile) -> Result<AuthSe
         .clone()
         .ok_or_else(|| anyhow!("access token expired and no refresh token is available"))?;
 
-    let refreshed = if is_bridge_managed(&session) {
-        VolvoClient::refresh_access_token_bridge(
-            &reqwest::Client::new(),
-            &session.token_endpoint,
-            &refresh_token,
-        )
-        .await
-    } else {
-        VolvoClient::refresh_access_token(
-            &reqwest::Client::new(),
-            &session.token_endpoint,
-            &session.client_id,
-            &session.client_secret,
-            &refresh_token,
-        )
-        .await
-    }
+    let refreshed = VolvoClient::refresh_access_token(
+        &reqwest::Client::new(),
+        &session.token_endpoint,
+        &session.client_id,
+        &session.client_secret,
+        &refresh_token,
+    )
+    .await
     .context("failed to refresh access token")?;
 
     let expires_at = refreshed.expires_in.map(|value| unix_now() + value as i64);
@@ -254,15 +245,9 @@ async fn ensure_fresh_session(store: &Store, profile: &Profile) -> Result<AuthSe
         .ok_or_else(|| anyhow!("missing auth session after token refresh"))
 }
 
-fn is_bridge_managed(session: &AuthSession) -> bool {
-    let token_endpoint = session.token_endpoint.to_ascii_lowercase();
-    token_endpoint.contains("/v1/oauth/refresh")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{is_bridge_managed, resolve_api_key, should_refresh};
-    use crate::store::sqlite::AuthSession;
+    use super::{resolve_api_key, should_refresh};
 
     #[test]
     fn refresh_when_expiring_soon() {
@@ -275,21 +260,5 @@ mod tests {
     fn api_key_override_wins() {
         let resolved = resolve_api_key(Some("  cli-key  ".to_owned())).expect("should resolve");
         assert_eq!(resolved, "cli-key");
-    }
-
-    #[test]
-    fn bridge_sessions_use_bridge_refresh_endpoint() {
-        let session = AuthSession {
-            profile_id: 1,
-            access_token: "a".to_owned(),
-            refresh_token: Some("r".to_owned()),
-            scope: None,
-            token_type: None,
-            expires_at: None,
-            token_endpoint: "https://bridge.example.com/v1/oauth/refresh".to_owned(),
-            client_id: "bridge-managed".to_owned(),
-            client_secret: "bridge-managed".to_owned(),
-        };
-        assert!(is_bridge_managed(&session));
     }
 }
