@@ -2,6 +2,10 @@
   "name": "@stefanosala/vc-cli-linux-x64",
   "version": "0.1.0",
   "description": "Platform binary for vc-cli (Linux x64)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stefanosala/vc-cli"
+  },
   "os": ["linux"],
   "cpu": ["x64"],
   "bin": {

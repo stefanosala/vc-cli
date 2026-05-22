@@ -2,6 +2,10 @@
   "name": "@stefanosala/vc-cli-win32-x64",
   "version": "0.1.0",
   "description": "Platform binary for vc-cli (Windows x64)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stefanosala/vc-cli"
+  },
   "os": ["win32"],
   "cpu": ["x64"],
   "bin": {
